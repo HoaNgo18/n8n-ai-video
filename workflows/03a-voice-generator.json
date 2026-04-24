@@ -1,0 +1,212 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        80,
+        720
+      ],
+      "id": "3d1d0cff-92f2-41db-bf04-0f63844c7856",
+      "name": "Manual Test Trigger"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "mode": "list",
+          "cachedResultName": "AI Workflow",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1894467848,
+          "mode": "list",
+          "cachedResultName": "Threads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit#gid=1894467848"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        304,
+        720
+      ],
+      "id": "26ac8730-06cc-4a0a-81a6-84a6b722c3aa",
+      "name": "Read Threads Sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "VEmpv0MmVvoaBa11",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().filter(item => {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasScript = String(item.json.Narrator_Script || '').trim();\n  const hasAudio = String(item.json.Audio_Path || '').trim();\n  return status === 'in progress' && hasScript && !hasAudio;\n});\n\nreturn rows.slice(0, 1);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        528,
+        720
+      ],
+      "id": "fb3da1a5-d2b0-4666-8200-c9343e79df5d",
+      "name": "Pick Voice Row"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { spawn } = require('child_process');\n\nconst python = 'D:\\\\Project III\\\\n8n-ai-video\\\\venv\\\\Scripts\\\\python.exe';\nconst script = 'D:\\\\Project III\\\\n8n-ai-video\\\\src\\\\video_factory.py';\nconst inputItems = $input.all();\nconst output = [];\n\nfunction runPython(args, timeoutMs) {\n  return new Promise((resolve, reject) => {\n    const child = spawn(python, args, {\n      cwd: 'D:\\\\Project III\\\\n8n-ai-video',\n      windowsHide: true,\n    });\n\n    let stdout = '';\n    let stderr = '';\n    const timer = setTimeout(() => {\n      child.kill();\n      reject(new Error(`Voice generator timed out after ${timeoutMs}ms`));\n    }, timeoutMs);\n\n    child.stdout.on('data', data => { stdout += data.toString('utf8'); });\n    child.stderr.on('data', data => { stderr += data.toString('utf8'); });\n    child.on('error', error => {\n      clearTimeout(timer);\n      reject(error);\n    });\n    child.on('close', code => {\n      clearTimeout(timer);\n      resolve({ code, stdout, stderr });\n    });\n  });\n}\n\nfor (const item of inputItems) {\n  const id = String(item.json.ID || '').trim();\n  const scriptText = String(item.json.Narrator_Script || '').trim();\n  if (!id || !scriptText) continue;\n\n  const result = await runPython([script, '--mode', 'voice', '--id', id, '--script', scriptText], 240000);\n\n  if (result.code !== 0) {\n    throw new Error(`Voice generator failed for ${id} with exit ${result.code}. stderr: ${(result.stderr || '').slice(0, 4000)}`);\n  }\n\n  let parsed;\n  try {\n    parsed = JSON.parse((result.stdout || '').trim());\n  } catch (error) {\n    throw new Error(`Could not parse voice generator JSON for ${id}. stdout: ${(result.stdout || '').slice(0, 1000)}`);\n  }\n\n  output.push({ json: parsed });\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        720
+      ],
+      "id": "4dc0e642-b885-4171-9e9b-5754274d4d13",
+      "name": "Run Voice Generator"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "mode": "list",
+          "cachedResultName": "AI Workflow",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1894467848,
+          "mode": "list",
+          "cachedResultName": "Threads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit#gid=1894467848"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "Audio_Path": "={{ $json.Audio_Path }}",
+            "Status": "={{ $json.Status }}",
+            "Note": "={{ $json.Note }}"
+          },
+          "matchingColumns": [
+            "ID"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        976,
+        720
+      ],
+      "id": "3ef611c4-d811-4bba-bdf8-19a4dc634a71",
+      "name": "Update Sheet Row",
+      "credentials": {
+        "googleApi": {
+          "id": "VEmpv0MmVvoaBa11",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Threads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Threads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Pick Voice Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Voice Row": {
+      "main": [
+        [
+          {
+            "node": "Run Voice Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Voice Generator": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "6c30afaa852f74e02f831710b585be20efcca194df2402dde964823fcb63a143"
+  }
+}

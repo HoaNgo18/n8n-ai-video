@@ -1,0 +1,396 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        1648,
+        1008
+      ],
+      "id": "93ff9ba7-f52d-4e8a-9de4-b309ab1a01db",
+      "name": "Manual Test Trigger"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        1648,
+        1184
+      ],
+      "id": "1967f7fd-8878-4c6a-8a18-d12680015c48",
+      "name": "Scheduler (every 6h)"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { spawn } = require('child_process');\n\nconst python = 'D:\\\\Project III\\\\n8n-ai-video\\\\venv\\\\Scripts\\\\python.exe';\nconst script = 'D:\\\\Project III\\\\n8n-ai-video\\\\src\\\\threads_miner.py';\n\nfunction runPython(args, timeoutMs) {\n  return new Promise((resolve, reject) => {\n    const child = spawn(python, args, {\n      cwd: 'D:\\\\Project III\\\\n8n-ai-video',\n      windowsHide: true,\n    });\n\n    let stdout = '';\n    let stderr = '';\n\n    const timer = setTimeout(() => {\n      child.kill();\n      reject(new Error(`Threads miner timed out after ${timeoutMs}ms`));\n    }, timeoutMs);\n\n    child.stdout.on('data', data => {\n      stdout += data.toString('utf8');\n    });\n\n    child.stderr.on('data', data => {\n      stderr += data.toString('utf8');\n    });\n\n    child.on('error', error => {\n      clearTimeout(timer);\n      reject(error);\n    });\n\n    child.on('close', code => {\n      clearTimeout(timer);\n      resolve({ code, stdout, stderr });\n    });\n  });\n}\n\nconst result = await runPython([script], 180000);\n\nif (result.code !== 0) {\n  throw new Error(`Threads miner failed with exit ${result.code}. stderr: ${(result.stderr || '').slice(0, 4000)}`);\n}\n\nreturn [{ json: { stdout: result.stdout || '', stderr: result.stderr || '' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1936,
+        1008
+      ],
+      "id": "af40cc8d-a985-4c44-beb9-aded0e34b4ea",
+      "name": "Run Threads Miner"
+    },
+    {
+      "parameters": {
+        "jsCode": "const stdout = ($input.first().json.stdout || '').trim();\nif (!stdout) return [];\n\nlet posts;\ntry {\n  posts = JSON.parse(stdout);\n} catch (e) {\n  throw new Error('Could not parse Threads miner JSON. stdout starts with: ' + stdout.substring(0, 300));\n}\n\nif (!Array.isArray(posts)) {\n  throw new Error('Threads miner must return a JSON array.');\n}\n\nreturn posts\n  .filter(p => p && p.id && p.url)\n  .map(p => ({ json: p }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        1008
+      ],
+      "id": "daa3c9f4-f436-411e-b2aa-b081cb35f1c0",
+      "name": "Parse JSON Output"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "ID",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "f2",
+              "name": "Source_URL",
+              "value": "={{ $json.url }}",
+              "type": "string"
+            },
+            {
+              "id": "f3",
+              "name": "Collected_At",
+              "value": "={{ $now.format('yyyy-MM-dd HH:mm') }}",
+              "type": "string"
+            },
+            {
+              "id": "f4",
+              "name": "Status",
+              "value": "Pending",
+              "type": "string"
+            },
+            {
+              "id": "f5",
+              "name": "Note",
+              "value": "={{ 'score=' + ($json.engagement_score || 0) + ' metrics=' + JSON.stringify($json.engagement_metrics || []) + ' | ' + ($json.text_preview || '') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2384,
+        1008
+      ],
+      "id": "36fa86c1-378f-4f4f-99d5-df8fa5a93f8f",
+      "name": "Normalize Sheet Row"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "mode": "list",
+          "cachedResultName": "AI Workflow",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1894467848,
+          "mode": "list",
+          "cachedResultName": "Threads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit#gid=1894467848"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2160,
+        1248
+      ],
+      "id": "4f03d161-ecb0-40c7-9b63-a21eae302b65",
+      "name": "Read Current Sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "VEmpv0MmVvoaBa11",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "removeKeyMatches",
+        "propertyName1": "ID",
+        "propertyName2": "ID"
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 1,
+      "position": [
+        2720,
+        1120
+      ],
+      "id": "1ae481c6-c58a-40be-ae4b-c9a2c33ab0b5",
+      "name": "Deduplicate by ID"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "mode": "list",
+          "cachedResultName": "AI Workflow",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1894467848,
+          "mode": "list",
+          "cachedResultName": "Threads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit#gid=1894467848"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "Source_URL": "={{ $json.Source_URL }}",
+            "Collected_At": "={{ $json.Collected_At }}",
+            "Status": "={{ $json.Status }}",
+            "Note": "={{ $json.Note }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2928,
+        1120
+      ],
+      "id": "e504d7a4-79fa-4713-87e9-5ef90bfabcce",
+      "name": "Append to Sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "VEmpv0MmVvoaBa11",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Run Threads Miner",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Current Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scheduler (every 6h)": {
+      "main": [
+        [
+          {
+            "node": "Run Threads Miner",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Current Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Threads Miner": {
+      "main": [
+        [
+          {
+            "node": "Parse JSON Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse JSON Output": {
+      "main": [
+        [
+          {
+            "node": "Normalize Sheet Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Sheet Row": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate by ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Current Sheet": {
+      "main": [
+        [
+          {
+            "node": "Deduplicate by ID",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Deduplicate by ID": {
+      "main": [
+        [
+          {
+            "node": "Append to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "6c30afaa852f74e02f831710b585be20efcca194df2402dde964823fcb63a143"
+  }
+}

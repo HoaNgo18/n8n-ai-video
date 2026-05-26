@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import traceback
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,74 @@ if hasattr(sys.stderr, "reconfigure"):
 
 THREADS_LOGIN_URL = "https://www.threads.net/login"
 POST_LOCATOR = 'div[data-pressable-container="true"]'
+TARGET_COMMENT_COUNT = 5
+MIN_ACCEPTED_COMMENT_COUNT = 3
+MAX_COMMENT_CAPTURE_ATTEMPTS = 4
+COMMENT_CAPTURE_WAIT_MS = 2500
+SALES_KEYWORDS = (
+    "gia",
+    "bao gia",
+    "order",
+    "dat hang",
+    "mua ngay",
+    "sale",
+    "giam gia",
+    "uu dai",
+    "khuyen mai",
+    "freeship",
+    "ship",
+    "cod",
+    "san pham",
+    "dich vu",
+    "khoa hoc",
+    "tuyen ctv",
+    "affiliate",
+    "booking",
+    "bang gia",
+    "lien he",
+    "inbox",
+    "ib",
+)
+SELF_PROMO_KEYWORDS = (
+    "follow minh",
+    "ung ho minh",
+    "kenh minh",
+    "profile minh",
+    "bio minh",
+    "link bio",
+    "xem them o bio",
+    "subscribe",
+    "dang ky kenh",
+    "toi la",
+    "minh la",
+)
+DISCUSSION_KEYWORDS = (
+    "nghi sao",
+    "quan diem",
+    "theo moi nguoi",
+    "co nen",
+    "vi sao",
+    "tai sao",
+    "dung hay sai",
+    "tranh cai",
+    "ban luan",
+    "goc nhin",
+    "van de",
+    "neu la ban",
+    "theo ban",
+)
+COMMENT_REASONING_KEYWORDS = (
+    "minh nghi",
+    "toi nghi",
+    "theo minh",
+    "theo toi",
+    "vi ",
+    "nhung",
+    "tuy nhien",
+    "neu ",
+    "boi vi",
+    "van de la",
+)
 VIET_PATTERN = re.compile(
     "["
     "\\u00e0\\u00e1\\u00e2\\u00e3\\u00e8\\u00e9\\u00ea\\u00ec\\u00ed"
@@ -63,6 +132,33 @@ class Config:
 
 def log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+def chromium_executable_path() -> str | None:
+    candidate = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH", "").strip()
+    known_paths = [
+        candidate,
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+    for path in known_paths:
+        if path and Path(path).exists():
+            return path
+    return None
+
+
+def decode_cli_text(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if raw[:1] in {'"', "["}:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, str):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return raw
 
 
 def canonical_url(url: str) -> str:
@@ -92,18 +188,125 @@ def is_vietnamese(text: str) -> bool:
     return bool(VIET_PATTERN.search(text or ""))
 
 
-def build_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str:
-    post_text = clean_text(post_text)
-    comment_texts = [clean_text(c.get("text", "")) for c in comments if clean_text(c.get("text", ""))]
+def normalize_search_text(text: str) -> str:
+    base = unicodedata.normalize("NFKD", text or "")
+    ascii_text = base.encode("ascii", "ignore").decode("ascii")
+    ascii_text = ascii_text.lower()
+    ascii_text = re.sub(r"\s+", " ", ascii_text)
+    return ascii_text.strip()
+
+
+def classify_content_quality(post_text: str, comments: list[dict[str, str]]) -> tuple[bool, str]:
+    normalized_post = normalize_search_text(post_text)
+    normalized_comments = [normalize_search_text(comment.get("text", "")) for comment in comments]
+    joined_comments = " ".join(text for text in normalized_comments if text)
+
+    if not normalized_post:
+        return False, "missing post text"
+
+    sales_hits = sum(1 for keyword in SALES_KEYWORDS if keyword in normalized_post)
+    self_promo_hits = sum(1 for keyword in SELF_PROMO_KEYWORDS if keyword in normalized_post)
+    has_price = bool(re.search(r"\b\d{2,3}(?:[.,]\d{3})+\b|\b\d+\s*(k|tr|cu|usd)\b", normalized_post))
+    has_contact = bool(re.search(r"\b\d{9,11}\b|zalo|sdt|so dien thoai", normalized_post))
+
+    if sales_hits >= 2 or (sales_hits >= 1 and (has_price or has_contact)):
+        return False, "sales/promotional post"
+    if self_promo_hits >= 2:
+        return False, "self-promotional post"
+
+    discussion_score = 0
+    if any(keyword in normalized_post for keyword in DISCUSSION_KEYWORDS):
+        discussion_score += 2
+    if "?" in post_text:
+        discussion_score += 1
+    if len(normalized_post.split()) >= 18:
+        discussion_score += 1
+
+    substantive_comments = [text for text in normalized_comments if len(text.split()) >= 8]
+    if len(substantive_comments) >= 3:
+        discussion_score += 2
+    elif len(substantive_comments) >= 2:
+        discussion_score += 1
+
+    reasoning_comments = sum(
+        1 for text in normalized_comments if any(keyword in text for keyword in COMMENT_REASONING_KEYWORDS)
+    )
+    if reasoning_comments >= 2:
+        discussion_score += 2
+    elif reasoning_comments >= 1:
+        discussion_score += 1
+
+    unique_comment_count = len({text for text in normalized_comments if text})
+    if unique_comment_count >= 4:
+        discussion_score += 1
+
+    if discussion_score < 3:
+        return False, "weak discussion content"
+
+    return True, "discussion content accepted"
+
+
+def strip_leading_handle_and_time(text: str) -> str:
+    text = clean_text(text)
+    text = re.sub(
+        r"^(?:Pinned\s+)?(?:@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){0,8})\s+\d+\s*[mhdsw]\b\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"^@?[A-Za-z0-9_.]{3,}\s+\d+\s*[mhdsw]\b\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\d+\s*[mhdsw]\b\s*", "", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def strip_trailing_metrics(text: str) -> str:
+    text = clean_text(text)
+    text = re.sub(r"(?:\s+\d+(?:[.,]\d+)?K?){2,}\s*$", "", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
+    text = trim_ui_text(text)
+    text = re.sub(r"\bAuthor\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bTop\s+View activity\b", "", text, flags=re.IGNORECASE)
+    text = strip_trailing_metrics(text)
+    text = strip_leading_handle_and_time(text)
+    text = clean_text(text)
+
+    if is_comment:
+        text = re.sub(r"^\u00b7\s*", "", text)
+    return clean_text(text)
+
+
+def build_basic_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str:
+    post_text = cleanup_screen_text(post_text, is_comment=False)
+    comment_texts = [
+        cleanup_screen_text(c.get("text", ""), is_comment=True)
+        for c in comments
+        if cleanup_screen_text(c.get("text", ""), is_comment=True)
+    ]
     parts = []
 
     if post_text:
-        parts.append(f"Cau chuyen dang duoc chu y tren Threads: {post_text}")
-    for index, comment in enumerate(comment_texts[:3], start=1):
-        parts.append(f"Binh luan {index}: {comment}")
+        parts.append(f"Bai dang Threads nay dang gay chu y nhu sau: {post_text}")
+    for index, comment in enumerate(comment_texts[:5], start=1):
+        if index == 1:
+            parts.append(f"Comment dau tien noi rang: {comment}")
+        elif index == 2:
+            parts.append(f"Mot y kien khac lai cho rang: {comment}")
+        elif index == 3:
+            parts.append(f"Con co nguoi bo sung them la: {comment}")
+        elif index == 4:
+            parts.append(f"Mot binh luan nua nhan manh rang: {comment}")
+        else:
+            parts.append(f"Y kien cuoi cung cho thay: {comment}")
 
-    script = " ".join(parts)
+    script = "\n".join(parts)
     return script[:1800]
+
+
+def build_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str:
+    return build_basic_narrator_script(post_text, comments)
 
 
 def trim_ui_text(text: str) -> str:
@@ -117,7 +320,7 @@ def dedupe_comments(comments: list[dict[str, str]]) -> list[dict[str, str]]:
     seen = set()
 
     for comment in comments:
-        text = trim_ui_text(comment.get("text", ""))
+        text = cleanup_screen_text(comment.get("text", ""), is_comment=True)
         if not text:
             continue
         normalized = re.sub(r"[^0-9A-Za-z\u00c0-\u1ef9]+", "", text.lower())
@@ -416,10 +619,43 @@ async def screenshot_clip(page: Page, rect: dict, output_path: Path, padding: in
 async def screenshot_post_and_comments(page: Page, post_id: str, post_dir: Path, max_comments: int) -> tuple[dict, dict]:
     post_path = post_dir / "post.png"
     comments_dir = post_dir / "comments"
+    best_post_block = None
+    best_comment_blocks: list[dict] = []
+
     await prepare_threads_page(page)
     await page.locator(POST_LOCATOR).first.wait_for(state="visible", timeout=10000)
-    blocks = await get_pressable_blocks(page)
-    post_block, comment_blocks = choose_post_and_comments(blocks, max_comments)
+
+    for attempt in range(1, MAX_COMMENT_CAPTURE_ATTEMPTS + 1):
+        blocks = await get_pressable_blocks(page)
+        post_block, comment_blocks = choose_post_and_comments(blocks, max_comments)
+
+        if post_block and len(comment_blocks) > len(best_comment_blocks):
+            best_post_block = post_block
+            best_comment_blocks = comment_blocks
+
+        log(
+            f"Comment capture attempt {attempt}/{MAX_COMMENT_CAPTURE_ATTEMPTS}: "
+            f"found {len(comment_blocks)} comment blocks"
+        )
+
+        if post_block and len(comment_blocks) >= max_comments:
+            best_post_block = post_block
+            best_comment_blocks = comment_blocks
+            break
+
+        if attempt < MAX_COMMENT_CAPTURE_ATTEMPTS:
+            await page.evaluate("window.scrollBy(0, window.innerHeight * 0.9)")
+            await page.wait_for_timeout(COMMENT_CAPTURE_WAIT_MS)
+            await prepare_threads_page(page)
+            if post_block:
+                try:
+                    await post_block["handle"].scroll_into_view_if_needed(timeout=5000)
+                except Exception:
+                    pass
+                await page.wait_for_timeout(800)
+
+    post_block = best_post_block
+    comment_blocks = best_comment_blocks
 
     if not post_block:
         log("Could not isolate post block from pressable containers; falling back to first visible post area.")
@@ -443,7 +679,7 @@ async def screenshot_post_and_comments(page: Page, post_id: str, post_dir: Path,
 
     screenshots = {"post": str(post_path), "comments": comment_paths}
     extracted = {
-        "post_text": trim_ui_text(post_block.get("text", "")),
+        "post_text": cleanup_screen_text(post_block.get("text", ""), is_comment=False),
         "comments": dedupe_comments(extracted_comments),
     }
     return screenshots, extracted
@@ -455,7 +691,11 @@ async def process_post(post_id: str, url: str, config: Config) -> dict:
     post_dir = config.screenshots_dir / run_date / safe_filename(post_id)
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=config.headless)
+        launch_kwargs = {"headless": config.headless}
+        executable_path = chromium_executable_path()
+        if executable_path:
+            launch_kwargs["executable_path"] = executable_path
+        browser = await playwright.chromium.launch(**launch_kwargs)
         context_options = {
             "viewport": {"width": 1365, "height": 900},
             "user_agent": (
@@ -483,17 +723,19 @@ async def process_post(post_id: str, url: str, config: Config) -> dict:
                 page,
                 post_id=post_id,
                 post_dir=post_dir,
-                max_comments=5,
+                max_comments=TARGET_COMMENT_COUNT,
             )
             content = await extract_visible_content(page)
 
-            post_text = trim_ui_text(isolated_content.get("post_text", "")) or trim_ui_text(content.get("post_text", ""))
+            post_text = cleanup_screen_text(isolated_content.get("post_text", ""), is_comment=False) or cleanup_screen_text(content.get("post_text", ""), is_comment=False)
             comments = dedupe_comments([
-                {"text": trim_ui_text(comment.get("text", ""))}
+                {"text": cleanup_screen_text(comment.get("text", ""), is_comment=True)}
                 for comment in (isolated_content.get("comments", []) or content.get("comments", []))
-                if trim_ui_text(comment.get("text", ""))
+                if cleanup_screen_text(comment.get("text", ""), is_comment=True)
             ])
             narrator_script = build_narrator_script(post_text, comments)
+            comment_count = len(comments)
+            content_ok, content_reason = classify_content_quality(post_text, comments)
 
             extracted = {
                 "post_text": post_text,
@@ -502,16 +744,36 @@ async def process_post(post_id: str, url: str, config: Config) -> dict:
                 "current_url": content.get("current_url", page.url),
             }
 
-            note = f"Phase 2: isolated post screenshot + {len(screenshots.get('comments', []))} comment screenshots"
+            screenshot_comment_count = len(screenshots.get("comments", []))
+            note = (
+                f"Phase 2: isolated post screenshot + {screenshot_comment_count} comment screenshots; "
+                f"extracted {comment_count} comments"
+            )
+            status = "In Progress"
             if not post_text:
                 note = "Phase 2 warning: screenshot saved but no text extracted"
+                status = "Rejected"
+            elif comment_count < MIN_ACCEPTED_COMMENT_COUNT:
+                note = (
+                    f"Phase 2 rejected: only extracted {comment_count}/{TARGET_COMMENT_COUNT} comments "
+                    f"after {MAX_COMMENT_CAPTURE_ATTEMPTS} attempts"
+                )
+                status = "Rejected"
+            elif not content_ok:
+                note = f"Phase 2 rejected: {content_reason}"
+                status = "Rejected"
+            elif comment_count < TARGET_COMMENT_COUNT:
+                note = (
+                    f"Phase 2 warning: extracted {comment_count}/{TARGET_COMMENT_COUNT} comments "
+                    f"after {MAX_COMMENT_CAPTURE_ATTEMPTS} attempts"
+                )
 
             return {
                 "ID": post_id,
                 "Screenshots": json.dumps(screenshots, ensure_ascii=True),
                 "Extracted_Content": json.dumps(extracted, ensure_ascii=True),
                 "Narrator_Script": narrator_script,
-                "Status": "In Progress",
+                "Status": status,
                 "Note": note,
             }
         except Exception:
@@ -574,7 +836,7 @@ def main() -> int:
     )
 
     try:
-        result = asyncio.run(process_post(args.id, args.url, config))
+        result = asyncio.run(process_post(decode_cli_text(args.id), decode_cli_text(args.url), config))
     except Exception as exc:
         log(f"Screenshot extractor failed: {exc}")
         log(traceback.format_exc())

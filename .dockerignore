@@ -1,0 +1,7 @@
+.git
+venv
+runtime/data
+runtime/debug
+runtime/storage
+__pycache__
+src/__pycache__

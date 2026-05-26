@@ -24,28 +24,33 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
   - [x] Save isolated post screenshot under `runtime/data/screenshots/YYYY-MM-DD/<ID>/post.png`.
   - [x] Save isolated comment screenshots under `runtime/data/screenshots/YYYY-MM-DD/<ID>/comments/comment_XX.png`.
   - [x] Extract visible text from the post page DOM.
-  - [x] Generate temporary `Narrator_Script`.
-  - [x] Update row with `Screenshots`, `Extracted_Content`, `Narrator_Script`.
+- [x] Generate temporary `Narrator_Script`.
+- [x] Update row with `Screenshots`, `Extracted_Content`, `Narrator_Script`.
+- [x] Added `AI Rewrite Script` node in `workflows/02-screenshot-extract.json` so the saved narration script can be rewritten by Gemini before Phase 3 TTS.
   - [x] Set `Status = In Progress`.
   - [x] Switched screenshot isolation to Threads DOM blocks using `div[data-pressable-container="true"]` + Playwright bounding boxes.
   - [x] Confirmed full n8n run after import.
 
-- [x] **Phase 3 Refactor: Split Pipeline**
+- [x] **Phase 3 Refactor: Multi-Lane Workflow**
   - [x] Script: `src/video_factory.py`
   - [x] Added mode `voice` for narration generation.
   - [x] Added mode `visual` for silent gameplay + screenshot render.
   - [x] Added mode `merge` for final audio/video mux.
-  - [x] Added workflows: `workflows/03a-voice-generator.json`, `workflows/03b-visual-builder.json`, `workflows/03c-merge-final.json`
-  - [ ] Add `Audio_Path` and `Visual_Video_Path` columns in Google Sheet.
-  - [ ] Import the 3 split Phase 3 workflows into n8n.
-  - [ ] Confirm successful end-to-end split Phase 3 run in n8n.
+  - [x] Consolidated Phase 3 into one workflow: `workflows/03-video-maker.json`
+  - [x] Updated merge output to create a TikTok `Caption` and set `Status = Draft`.
+  - [ ] Add `Audio_Path`, `Visual_Video_Path`, `Caption`, `Admin_Decision`, and `TikTok_Publish_ID` columns in Google Sheet.
+  - [ ] Import the updated Phase 3 workflow into n8n.
+  - [ ] Confirm successful end-to-end Phase 3 run in n8n.
 
-- [ ] **Phase 4: Auto Publisher**
-  - [ ] Workflow: `workflows/04-auto-publisher.json`
-  - [ ] Send completed videos for human approval.
-  - [ ] Publish to target platforms.
-  - [ ] Update `Published_URL`.
-  - [ ] Set `Status = Published` or `Rejected`.
+- [x] **Phase 4: Admin Review + Manual Upload MVP**
+  - [x] Workflow: `workflows/04-auto-publisher.json`
+  - [x] Convert `Draft + Admin_Decision=approve` to `Ready To Upload`.
+  - [x] Convert `Draft + Admin_Decision=reject` to `Rejected`.
+  - [x] Confirm manual TikTok upload when `Published_URL` is filled in the sheet.
+  - [x] Update `Published_URL`, `Status`, and `Note`.
+  - [ ] Import the Phase 4 workflow into n8n.
+  - [ ] Add final manual-upload helper columns if desired (`Uploaded_At`, `Upload_Note`).
+  - [ ] Confirm successful end-to-end manual upload flow.
 
 ## Improvement Notes
 
@@ -78,11 +83,15 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
 
 ### Phase 3 Planned Improvements
 
-- Voice, visual build, and merge are now split so TTS/network delays do not block gameplay render and merge debugging.
+- Voice, visual build, and merge now run as separate lanes inside one workflow so TTS/network delays do not block gameplay render and merge debugging.
 - TTS now tries FPT.AI Speech first using `FPT_TTS_API_KEY`, `FPT_TTS_VOICE=banmai`, and `FPT_TTS_SPEED=0`; then `edge-tts`, gTTS, offline Windows SAPI, and silent audio if all providers fail.
 - Screenshot timeline is sequential: original post first, then each comment screenshot one-by-one.
+- Visual timing now prefers the real `Audio_Path` duration when available; otherwise it falls back to a text-length estimate.
+- Each screenshot slot is timed sequentially with a bounded first-post window so the post cannot dominate nearly the whole video before comments appear.
+- Screenshot overlays now scale to full video width and sit higher on screen instead of vertically centered.
 - `03B` renders a silent visual video with `preset=veryfast` and `fps=24` to reduce task-runner timeout risk.
-- `03C` only muxes audio + visual and sets `Status = Done`, so reruns are cheaper when only one side fails.
+- `03C` muxes audio + visual, creates `Caption`, and sets `Status = Draft` so admin approval can happen before publishing.
+- Phase 2 can optionally rewrite the temporary narration script through an AI provider before TTS when `SCRIPT_REWRITE_ENABLED=true`.
 - Later improvement: use a paid Vietnamese TTS provider with better voice consistency and fewer network failures.
 - Later improvement: animate post/comment screenshots with smoother timed reveals, scale transitions, and safe-area checks.
 - Later improvement: add captions/subtitles synced to narration.

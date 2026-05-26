@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+playwright
+requests
+gTTS
+edge-tts
+imageio-ffmpeg

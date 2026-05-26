@@ -19,17 +19,11 @@ Phase 1: Threads Miner
 Phase 2: Screenshot + Extract
   -> Status: In Progress
 
-Phase 3A: Voice Generator
-  -> Status: In Progress
+Phase 3: Video Maker
+  -> Status: Draft
 
-Phase 3B: Visual Builder
-  -> Status: In Progress
-
-Phase 3C: Merge Final
-  -> Status: Done
-
-Phase 4: Publisher
-  -> Status: Published / Rejected
+Phase 4: Admin Review + Publisher
+  -> Status: Ready To Upload / Rejected / Uploaded
 ```
 
 ## Phase Details
@@ -76,6 +70,8 @@ MVP behavior:
 - Save 3-5 isolated comment screenshots as `runtime/data/screenshots/YYYY-MM-DD/<ID>/comments/comment_XX.png` when available.
 - Extract visible text from the post page.
 - Create initial `Extracted_Content` and `Narrator_Script`.
+- n8n runs an `AI Rewrite Script` node after extraction to rewrite the narration into cleaner spoken Vietnamese before saving it back to the sheet.
+- If `SCRIPT_REWRITE_ENABLED=true` and rewrite credentials are configured, rewrite the raw extracted text into a shorter natural narration script before TTS.
 - Update the row and set `Status = In Progress`.
 
 Future behavior:
@@ -88,22 +84,20 @@ Future behavior:
 
 Files:
 
-- `workflows/03a-voice-generator.json`
-- `workflows/03b-visual-builder.json`
-- `workflows/03c-merge-final.json`
+- `workflows/03-video-maker.json`
 - `src/video_factory.py`
 
-Current status: split MVP implemented.
+Current status: split-lane MVP implemented in one workflow.
 
 Planned behavior:
 
-- `03A` reads rows where `Status = In Progress` and `Audio_Path` is empty, then generates narration audio.
-- `03B` reads rows where `Status = In Progress` and `Visual_Video_Path` is empty, then renders the silent visual video.
-- `03C` reads rows where `Status = In Progress`, `Audio_Path` exists, and `Visual_Video_Path` exists, then merges them into the final MP4.
+- Lane A reads rows where `Status = In Progress` and `Audio_Path` is empty, then generates narration audio.
+- Lane B reads rows where `Status = In Progress` and `Visual_Video_Path` is empty, then renders the silent visual video.
+- Lane C reads rows where `Status = In Progress`, `Audio_Path` exists, and `Visual_Video_Path` exists, then merges them into the final MP4.
 - Export audio under `runtime/data/audio/YYYY-MM-DD/<ID>/`.
 - Export silent visual video under `runtime/data/visuals/YYYY-MM-DD/<ID>/`.
 - Export final MP4 under `runtime/data/videos/YYYY-MM-DD/<ID>/`.
-- Update `Video_Path` and set `Status = Done` only after merge.
+- Update `Video_Path`, generate `Caption`, and set `Status = Draft` only after merge.
 
 MVP notes:
 
@@ -112,9 +106,12 @@ MVP notes:
 - `FPT_TTS_VOICE` controls the FPT voice. Current default: `banmai`.
 - `FPT_TTS_SPEED` controls FPT speed. Current default: `0`.
 - `TTS_VOICE` controls the Edge fallback voice. Current default: `vi-VN-HoaiMyNeural`.
+- `SCRIPT_REWRITE_ENABLED` toggles optional AI rewrite for `Narrator_Script`.
+- `GEMINI_API_KEY` is the preferred key for the Phase 2 rewrite node.
+- `SCRIPT_REWRITE_MODEL` and `SCRIPT_REWRITE_BASE_URL` configure the Gemini rewrite request.
 - Optional `SAPI_VOICE` can select an installed Windows offline voice if network TTS is unavailable.
 - Final duration follows the generated narration length, with a short tail buffer.
-- Add `Audio_Path` and `Visual_Video_Path` columns to the Google Sheet before importing the split Phase 3 workflows.
+- Add `Audio_Path`, `Visual_Video_Path`, `Caption`, `Admin_Decision`, and `TikTok_Publish_ID` columns to the Google Sheet before importing the updated Phase 3 and Phase 4 workflows.
 - Generated media stays in `runtime/` and should not be committed to git.
 - The workflow should update the same row by `ID`.
 
@@ -124,14 +121,23 @@ File:
 
 - `workflows/04-auto-publisher.json`
 
-Current status: not started.
+Current status: Sheet approval + manual TikTok upload handoff implemented in workflow JSON.
 
-Planned behavior:
+MVP behavior:
 
-- Send completed video for human approval.
-- Publish to target platforms after approval.
-- Update `Published_URL`.
-- Set `Status = Published` or `Rejected`.
+- Read completed drafts where `Status = Draft`.
+- Admin reviews local `Video_Path`, edits `Caption` if needed, then sets `Admin_Decision = approve` or `reject`.
+- Set rejected rows to `Status = Rejected`.
+- Set approved rows to `Status = Ready To Upload`.
+- Keep `Video_Path` and `Caption` ready for manual TikTok upload.
+- After the upload is done manually, fill `Published_URL` in the sheet.
+- The workflow converts `Ready To Upload + Published_URL` to `Status = Uploaded`.
+
+Known notes:
+
+- Phase 4 no longer depends on TikTok API production approval.
+- The final TikTok upload step is intentionally manual to avoid OAuth/app-review blockers for internal use.
+- `Published_URL` is now the main confirmation field for a completed upload.
 
 ## Credentials And Runtime
 
@@ -146,7 +152,7 @@ Later:
 
 - Gemini API key for Vision/script extraction.
 - TTS provider for Vietnamese narration.
-- Platform APIs for publishing.
+- Optional notification channel for manual-upload reminders.
 
 ## Git Guidance
 

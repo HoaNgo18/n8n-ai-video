@@ -33,10 +33,12 @@
     },
     {
       "parameters": {
-        "jsCode": "const { spawn } = require('child_process');\n\nconst python = 'D:\\\\Project III\\\\n8n-ai-video\\\\venv\\\\Scripts\\\\python.exe';\nconst script = 'D:\\\\Project III\\\\n8n-ai-video\\\\src\\\\threads_miner.py';\n\nfunction runPython(args, timeoutMs) {\n  return new Promise((resolve, reject) => {\n    const child = spawn(python, args, {\n      cwd: 'D:\\\\Project III\\\\n8n-ai-video',\n      windowsHide: true,\n    });\n\n    let stdout = '';\n    let stderr = '';\n\n    const timer = setTimeout(() => {\n      child.kill();\n      reject(new Error(`Threads miner timed out after ${timeoutMs}ms`));\n    }, timeoutMs);\n\n    child.stdout.on('data', data => {\n      stdout += data.toString('utf8');\n    });\n\n    child.stderr.on('data', data => {\n      stderr += data.toString('utf8');\n    });\n\n    child.on('error', error => {\n      clearTimeout(timer);\n      reject(error);\n    });\n\n    child.on('close', code => {\n      clearTimeout(timer);\n      resolve({ code, stdout, stderr });\n    });\n  });\n}\n\nconst result = await runPython([script], 180000);\n\nif (result.code !== 0) {\n  throw new Error(`Threads miner failed with exit ${result.code}. stderr: ${(result.stderr || '').slice(0, 4000)}`);\n}\n\nreturn [{ json: { stdout: result.stdout || '', stderr: result.stderr || '' } }];"
+        "url": "http://host.docker.internal:8000/phase1/threads-miner",
+        "method": "POST",
+        "options": {}
       },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
       "position": [
         1936,
         1008
@@ -46,7 +48,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const stdout = ($input.first().json.stdout || '').trim();\nif (!stdout) return [];\n\nlet posts;\ntry {\n  posts = JSON.parse(stdout);\n} catch (e) {\n  throw new Error('Could not parse Threads miner JSON. stdout starts with: ' + stdout.substring(0, 300));\n}\n\nif (!Array.isArray(posts)) {\n  throw new Error('Threads miner must return a JSON array.');\n}\n\nreturn posts\n  .filter(p => p && p.id && p.url)\n  .map(p => ({ json: p }));"
+        "jsCode": "const payload = $input.first().json;\nconst posts = Array.isArray(payload.posts) ? payload.posts : [];\nif (!Array.isArray(posts)) {\n  throw new Error('Threads miner must return posts as a JSON array.');\n}\n\nreturn posts\n  .filter(p => p && p.id && p.url)\n  .map(p => ({ json: p }));"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -116,11 +118,11 @@
         },
         "sheetName": {
           "__rl": true,
-          "value": 1894467848,
-          "mode": "list",
-          "cachedResultName": "Threads",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit#gid=1894467848"
+          "value": "Threads",
+          "mode": "name"
         },
+        "operation": "read",
+        "range": "Threads!A:F",
         "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
@@ -140,12 +142,15 @@
     },
     {
       "parameters": {
-        "mode": "removeKeyMatches",
-        "propertyName1": "ID",
-        "propertyName2": "ID"
+        "mode": "combine",
+        "combineBy": "combineByFields",
+        "fieldsToMatchString": "ID",
+        "joinMode": "keepNonMatches",
+        "outputDataFrom": "input1",
+        "options": {}
       },
       "type": "n8n-nodes-base.merge",
-      "typeVersion": 1,
+      "typeVersion": 3.2,
       "position": [
         2720,
         1120
@@ -166,10 +171,8 @@
         },
         "sheetName": {
           "__rl": true,
-          "value": 1894467848,
-          "mode": "list",
-          "cachedResultName": "Threads",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit#gid=1894467848"
+          "value": "Threads",
+          "mode": "name"
         },
         "columns": {
           "mappingMode": "defineBelow",

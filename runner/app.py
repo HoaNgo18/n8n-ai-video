@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+
+PROJECT_ROOT = Path("/workspace")
+PYTHON_BIN = "python"
+
+app = FastAPI(title="n8n AI Video Runner")
+
+
+class Phase2Payload(BaseModel):
+    id: str
+    url: str
+
+
+class Phase3VoicePayload(BaseModel):
+    id: str
+    script: str
+
+
+class Phase3VisualPayload(BaseModel):
+    id: str
+    screenshots: str
+    script: str = ""
+    audio_path: str = ""
+
+
+class Phase3MergePayload(BaseModel):
+    id: str
+    audio_path: str
+    visual_path: str
+    script: str = ""
+    extracted_content: str = ""
+
+
+class Phase4PublishPayload(BaseModel):
+    id: str
+    video_path: str
+    caption: str
+
+
+def run_python(args: list[str], timeout: int) -> dict:
+    result = subprocess.run(
+        [PYTHON_BIN, *args],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=timeout,
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": f"Python command failed with exit {result.returncode}",
+                "command": [PYTHON_BIN, *args],
+                "stdout": stdout[:4000],
+                "stderr": stderr[:4000],
+            },
+        )
+
+    try:
+        return json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": f"Could not parse Python JSON output: {exc}",
+                "command": [PYTHON_BIN, *args],
+                "stdout": stdout[:4000],
+                "stderr": stderr[:4000],
+            },
+        ) from exc
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/phase1/threads-miner")
+def phase1_threads_miner() -> dict[str, object]:
+    posts = run_python(["src/threads_miner.py"], timeout=180)
+    if not isinstance(posts, list):
+        raise HTTPException(status_code=500, detail={"message": "threads_miner.py must return a JSON array"})
+    return {"posts": posts}
+
+
+@app.post("/phase2/screenshot-extract")
+def phase2_screenshot_extract(payload: Phase2Payload) -> dict:
+    data = run_python(
+        ["src/screenshot_extractor.py", "--id", payload.id, "--url", payload.url],
+        timeout=240,
+    )
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail={"message": "screenshot_extractor.py must return a JSON object"})
+    return data
+
+
+@app.post("/phase3/voice")
+def phase3_voice(payload: Phase3VoicePayload) -> dict:
+    data = run_python(
+        ["src/video_factory.py", "--mode", "voice", "--id", payload.id, "--script", payload.script],
+        timeout=180,
+    )
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail={"message": "video_factory.py voice mode must return a JSON object"})
+    return data
+
+
+@app.post("/phase3/visual")
+def phase3_visual(payload: Phase3VisualPayload) -> dict:
+    args = [
+        "src/video_factory.py",
+        "--mode",
+        "visual",
+        "--id",
+        payload.id,
+        "--screenshots",
+        payload.screenshots,
+        "--script",
+        payload.script,
+    ]
+    if payload.audio_path:
+        args.extend(["--audio-path", payload.audio_path])
+    data = run_python(args, timeout=360)
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail={"message": "video_factory.py visual mode must return a JSON object"})
+    return data
+
+
+@app.post("/phase3/merge")
+def phase3_merge(payload: Phase3MergePayload) -> dict:
+    data = run_python(
+        [
+            "src/video_factory.py",
+            "--mode",
+            "merge",
+            "--id",
+            payload.id,
+            "--audio-path",
+            payload.audio_path,
+            "--visual-path",
+            payload.visual_path,
+            "--script",
+            payload.script,
+            "--extracted-content",
+            payload.extracted_content,
+        ],
+        timeout=180,
+    )
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail={"message": "video_factory.py merge mode must return a JSON object"})
+    return data
+
+
+@app.post("/phase4/publish")
+def phase4_publish(payload: Phase4PublishPayload) -> dict:
+    data = run_python(
+        [
+            "src/tiktok_publisher.py",
+            "--id",
+            payload.id,
+            "--video-path",
+            payload.video_path,
+            "--caption",
+            payload.caption,
+        ],
+        timeout=600,
+    )
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail={"message": "tiktok_publisher.py must return a JSON object"})
+    return data

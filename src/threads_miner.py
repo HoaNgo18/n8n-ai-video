@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import traceback
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -44,6 +45,48 @@ DEFAULT_MIN_ENGAGEMENT_SCORE = 1000
 THREADS_LOGIN_URL = "https://www.threads.net/login"
 THREADS_EXPLORE_URL = "https://www.threads.net/explore"
 THREADS_HOME_URL = "https://www.threads.net/"
+SALES_KEYWORDS = (
+    "gia",
+    "bao gia",
+    "order",
+    "dat hang",
+    "mua ngay",
+    "sale",
+    "giam gia",
+    "uu dai",
+    "khuyen mai",
+    "freeship",
+    "ship",
+    "cod",
+    "san pham",
+    "dich vu",
+    "khoa hoc",
+    "tuyen ctv",
+    "affiliate",
+    "booking",
+    "bang gia",
+    "lien he",
+    "inbox",
+    "ib",
+)
+SELF_PROMO_KEYWORDS = (
+    "follow minh",
+    "flop qua",
+    "ung ho minh",
+    "kenh minh",
+    "profile minh",
+    "bio minh",
+    "link bio",
+    "xem them o bio",
+    "subcribe",
+    "subscribe",
+    "dang ky kenh",
+    "kenh youtube",
+    "tiktok cua minh",
+    "facebook cua minh",
+    "toi la",
+    "minh la",
+)
 
 # Vietnamese diacritics, written as unicode escapes so the file stays ASCII-safe.
 VIET_PATTERN = re.compile(
@@ -77,6 +120,19 @@ def log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
+def chromium_executable_path() -> str | None:
+    candidate = os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH", "").strip()
+    known_paths = [
+        candidate,
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+    for path in known_paths:
+        if path and Path(path).exists():
+            return path
+    return None
+
+
 async def write_debug_artifacts(page: Page, config: Config, label: str) -> None:
     config.debug_dir.mkdir(parents=True, exist_ok=True)
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("_") or "debug"
@@ -98,6 +154,31 @@ async def write_debug_artifacts(page: Page, config: Config, label: str) -> None:
 
 def is_vietnamese(text: str) -> bool:
     return bool(VIET_PATTERN.search(text or ""))
+
+
+def normalize_search_text(text: str) -> str:
+    base = unicodedata.normalize("NFKD", text or "")
+    ascii_text = base.encode("ascii", "ignore").decode("ascii")
+    ascii_text = ascii_text.lower()
+    ascii_text = re.sub(r"\s+", " ", ascii_text)
+    return ascii_text.strip()
+
+
+def classify_preview_text(text: str) -> str | None:
+    normalized = normalize_search_text(text)
+    if not normalized:
+        return "empty preview"
+
+    sales_hits = sum(1 for keyword in SALES_KEYWORDS if keyword in normalized)
+    self_promo_hits = sum(1 for keyword in SELF_PROMO_KEYWORDS if keyword in normalized)
+    has_price = bool(re.search(r"\b\d{2,3}(?:[.,]\d{3})+\b|\b\d+\s*(k|tr|cu|usd)\b", normalized))
+    has_contact = bool(re.search(r"\b\d{9,11}\b|zalo|sdt|so dien thoai", normalized))
+
+    if sales_hits >= 2 or (sales_hits >= 1 and (has_price or has_contact)):
+        return "sales/promotional preview"
+    if self_promo_hits >= 2:
+        return "self-promotional preview"
+    return None
 
 
 def canonical_url(url: str) -> str:
@@ -301,6 +382,11 @@ async def collect_posts(page: Page, config: Config) -> list[dict[str, str]]:
                 if not is_vietnamese(text):
                     continue
 
+                reject_reason = classify_preview_text(text)
+                if reject_reason:
+                    log(f"Skip low-quality preview: {reject_reason} url={url}")
+                    continue
+
                 engagement = estimate_engagement(text)
                 if engagement["score"] < config.min_engagement_score:
                     log(
@@ -347,7 +433,11 @@ async def collect_posts(page: Page, config: Config) -> list[dict[str, str]]:
 
 async def scrape(config: Config) -> list[dict[str, str]]:
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=config.headless)
+        launch_kwargs = {"headless": config.headless}
+        executable_path = chromium_executable_path()
+        if executable_path:
+            launch_kwargs["executable_path"] = executable_path
+        browser = await playwright.chromium.launch(**launch_kwargs)
         context_options = {
             "viewport": {"width": 1365, "height": 900},
             "user_agent": (

@@ -5,6 +5,9 @@ RUN apt-get update \
         chromium \
         ffmpeg \
         fonts-liberation \
+        fonts-noto-color-emoji \
+        fonts-noto-core \
+        fonts-noto-cjk \
         libasound2 \
         libatk-bridge2.0-0 \
         libatk1.0-0 \

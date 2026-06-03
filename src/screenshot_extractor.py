@@ -39,8 +39,12 @@ if hasattr(sys.stderr, "reconfigure"):
 THREADS_LOGIN_URL = "https://www.threads.net/login"
 POST_LOCATOR = 'div[data-pressable-container="true"]'
 TARGET_COMMENT_COUNT = 5
+TARGET_DISCUSSION_COMMENT_COUNT = 6
+MAX_STORY_CONTINUATIONS = 12
+MAX_TOTAL_SEGMENTS = 12
+MAX_SCRIPT_TEXT_LENGTH = 8000
 MIN_ACCEPTED_COMMENT_COUNT = 3
-MAX_COMMENT_CAPTURE_ATTEMPTS = 4
+MAX_COMMENT_CAPTURE_ATTEMPTS = 8
 COMMENT_CAPTURE_WAIT_MS = 2500
 SALES_KEYWORDS = (
     "gia",
@@ -66,6 +70,7 @@ SALES_KEYWORDS = (
     "inbox",
     "ib",
 )
+WEAK_SALES_KEYWORDS = {"gia", "ship", "ib", "inbox"}
 SELF_PROMO_KEYWORDS = (
     "follow minh",
     "ung ho minh",
@@ -94,6 +99,40 @@ DISCUSSION_KEYWORDS = (
     "neu la ban",
     "theo ban",
 )
+STORY_KEYWORDS = (
+    "cau chuyen",
+    "ke chuyen",
+    "tam su",
+    "confession",
+    "storytime",
+    "ket qua la",
+    "luc do",
+    "hom nay",
+    "hom qua",
+    "plot twist",
+    "bi soc",
+    "gap chuyen",
+)
+HOT_TOPIC_KEYWORDS = (
+    "thoi tiet",
+    "gia nha",
+    "bat dong san",
+    "chung cu",
+    "kinh te",
+    "lam phat",
+    "gia vang",
+    "chinh tri",
+    "xa hoi",
+    "luong",
+    "that nghiep",
+    "hoc phi",
+    "benh vien",
+    "giao thong",
+    "tai nan",
+    "trend",
+    "viral",
+    "dang hot",
+)
 COMMENT_REASONING_KEYWORDS = (
     "minh nghi",
     "toi nghi",
@@ -105,6 +144,10 @@ COMMENT_REASONING_KEYWORDS = (
     "neu ",
     "boi vi",
     "van de la",
+)
+CONTINUATION_MARKER_RE = re.compile(
+    r"(?:^|[\s(])(?:\d+\s*/\s*\d+|part\s*\d+|p\s*\d+|\(\s*\d+\s*\))(?:$|[\s).,:;-])",
+    re.IGNORECASE,
 )
 VIET_PATTERN = re.compile(
     "["
@@ -166,6 +209,11 @@ def canonical_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
 
+def extract_author_from_url(url: str) -> str:
+    match = re.search(r"threads\.(?:net|com)/@([A-Za-z0-9_.]+)/post/", url or "", flags=re.IGNORECASE)
+    return match.group(1).lower() if match else ""
+
+
 def safe_filename(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_") or "item"
 
@@ -184,6 +232,25 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def strip_threads_context_noise(text: str) -> str:
+    text = re.sub(
+        r"\(?\s*\d+\s*\)?\s*(?:/\s*\d+\s*)?"
+        r"(?:\d+(?:[.,]\d+)?[KMkm]?\s*){2,6}"
+        r"(?:to\s+[A-Za-z0-9_.\s-]+)?\.{0,3}\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\(?\s*\d+\s*\)?\s*(?:/\s*\d+\s*)?(?:to\s+[A-Za-z0-9_.\s-]+)?\.{0,3}\s*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\bto\s+[A-Za-z0-9_.\s-]+\.{0,3}\s*$", "", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
 def is_vietnamese(text: str) -> bool:
     return bool(VIET_PATTERN.search(text or ""))
 
@@ -196,35 +263,78 @@ def normalize_search_text(text: str) -> str:
     return ascii_text.strip()
 
 
-def classify_content_quality(post_text: str, comments: list[dict[str, str]]) -> tuple[bool, str]:
+def contains_normalized_keyword(text: str, keyword: str) -> bool:
+    keyword = normalize_search_text(keyword)
+    if not keyword:
+        return False
+
+    if " " in keyword:
+        return keyword in text
+
+    pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
+    return bool(re.search(pattern, text))
+
+
+def matched_keywords(text: str, keywords: tuple[str, ...]) -> list[str]:
+    return [keyword for keyword in keywords if contains_normalized_keyword(text, keyword)]
+
+
+def classify_content_quality(
+    post_text: str,
+    comments: list[dict[str, str]],
+    continuations: list[dict[str, str]] | None = None,
+) -> tuple[bool, str]:
     normalized_post = normalize_search_text(post_text)
     normalized_comments = [normalize_search_text(comment.get("text", "")) for comment in comments]
-    joined_comments = " ".join(text for text in normalized_comments if text)
+    continuation_count = len(continuations or [])
 
     if not normalized_post:
         return False, "missing post text"
 
-    sales_hits = sum(1 for keyword in SALES_KEYWORDS if keyword in normalized_post)
-    self_promo_hits = sum(1 for keyword in SELF_PROMO_KEYWORDS if keyword in normalized_post)
+    sales_hits = matched_keywords(normalized_post, SALES_KEYWORDS)
+    strong_sales_hits = [keyword for keyword in sales_hits if keyword not in WEAK_SALES_KEYWORDS]
+    weak_sales_hits = [keyword for keyword in sales_hits if keyword in WEAK_SALES_KEYWORDS]
+    self_promo_hits = matched_keywords(normalized_post, SELF_PROMO_KEYWORDS)
     has_price = bool(re.search(r"\b\d{2,3}(?:[.,]\d{3})+\b|\b\d+\s*(k|tr|cu|usd)\b", normalized_post))
     has_contact = bool(re.search(r"\b\d{9,11}\b|zalo|sdt|so dien thoai", normalized_post))
 
-    if sales_hits >= 2 or (sales_hits >= 1 and (has_price or has_contact)):
-        return False, "sales/promotional post"
-    if self_promo_hits >= 2:
+    if len(strong_sales_hits) >= 2:
+        return False, f"sales/promotional post keywords={','.join(strong_sales_hits[:3])}"
+    if strong_sales_hits and (has_price or has_contact):
+        return False, f"sales/promotional post keywords={','.join(strong_sales_hits[:3])}"
+    if len(weak_sales_hits) >= 2 and (has_price or has_contact):
+        return False, f"sales/promotional post keywords={','.join(weak_sales_hits[:3])}"
+    if len(self_promo_hits) >= 2:
         return False, "self-promotional post"
 
+    discussion_hits = [keyword for keyword in DISCUSSION_KEYWORDS if keyword in normalized_post]
+    story_hits = [keyword for keyword in STORY_KEYWORDS if keyword in normalized_post]
+    topic_hits = [keyword for keyword in HOT_TOPIC_KEYWORDS if keyword in normalized_post]
+
     discussion_score = 0
-    if any(keyword in normalized_post for keyword in DISCUSSION_KEYWORDS):
+    story_score = 0
+
+    if discussion_hits:
         discussion_score += 2
     if "?" in post_text:
         discussion_score += 1
     if len(normalized_post.split()) >= 18:
         discussion_score += 1
+    if story_hits:
+        story_score += 2
+    if topic_hits:
+        story_score += 2
+    if len(normalized_post.split()) >= 22:
+        story_score += 1
+    if continuation_count >= 1:
+        story_score += 2
+    if continuation_count >= 2:
+        story_score += 1
 
     substantive_comments = [text for text in normalized_comments if len(text.split()) >= 8]
     if len(substantive_comments) >= 3:
         discussion_score += 2
+        story_score += 1
     elif len(substantive_comments) >= 2:
         discussion_score += 1
 
@@ -239,11 +349,24 @@ def classify_content_quality(post_text: str, comments: list[dict[str, str]]) -> 
     unique_comment_count = len({text for text in normalized_comments if text})
     if unique_comment_count >= 4:
         discussion_score += 1
+        story_score += 1
 
-    if discussion_score < 3:
-        return False, "weak discussion content"
+    has_split_opinions = unique_comment_count >= 3 and reasoning_comments >= 1
+    if discussion_score >= 3 and has_split_opinions:
+        return True, f"discussion accepted keywords={','.join(discussion_hits[:2]) or 'none'}"
 
-    return True, "discussion content accepted"
+    if story_score >= 4 and (len(substantive_comments) >= 2 or continuation_count >= 1):
+        topic_reason = ",".join((topic_hits[:2] + story_hits[:2])) or "story/topic"
+        return True, f"story/topic accepted keywords={topic_reason}"
+
+    if continuation_count >= 1 and len(normalized_post.split()) >= 40:
+        return True, "story accepted by continuation flow"
+
+    if len(substantive_comments) < 2 and continuation_count == 0:
+        return False, "not enough substantive comments"
+    if not (discussion_hits or story_hits or topic_hits):
+        return False, "missing discussion/story/topic signals"
+    return False, "weak discussion/story signals"
 
 
 def strip_leading_handle_and_time(text: str) -> str:
@@ -265,11 +388,51 @@ def strip_trailing_metrics(text: str) -> str:
     return clean_text(text)
 
 
+def parse_metric_value(value: str) -> float:
+    compact = (value or "").strip().upper().replace(",", ".")
+    if not compact:
+        return 0.0
+    multiplier = 1.0
+    if compact.endswith("K"):
+        multiplier = 1000.0
+        compact = compact[:-1]
+    elif compact.endswith("M"):
+        multiplier = 1000000.0
+        compact = compact[:-1]
+    try:
+        return float(compact) * multiplier
+    except ValueError:
+        return 0.0
+
+
+def extract_engagement_score(text: str) -> int:
+    matches = re.findall(r"(\d+(?:[.,]\d+)?(?:K|M)?)", text or "", flags=re.IGNORECASE)
+    if not matches:
+        return 0
+    values = [parse_metric_value(item) for item in matches[-4:]]
+    if not values:
+        return 0
+    if len(values) == 1:
+        return int(values[0])
+    like_score = values[0]
+    comment_score = values[1] if len(values) > 1 else 0
+    repost_score = values[2] if len(values) > 2 else 0
+    share_score = values[3] if len(values) > 3 else 0
+    weighted = like_score + comment_score * 3.0 + repost_score * 2.0 + share_score * 1.5
+    return int(weighted)
+
+
 def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
     text = trim_ui_text(text)
     text = re.sub(r"\bAuthor\b", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\bTop\s+View activity\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bReply\s+to\s+[A-Za-z0-9_.-]+\.{0,3}", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bTranslate\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?<!\d)\b\d+\s*/\s*\d+\b(?!\d)", " ", text)
+    text = re.sub(r"\b\d+\s*[smhdw]\b", " ", text, flags=re.IGNORECASE)
+    text = strip_threads_context_noise(text)
     text = strip_trailing_metrics(text)
+    text = strip_threads_context_noise(text)
     text = strip_leading_handle_and_time(text)
     text = clean_text(text)
 
@@ -278,31 +441,41 @@ def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
     return clean_text(text)
 
 
+def is_low_value_comment(text: str) -> bool:
+    normalized = normalize_search_text(text)
+    if not normalized:
+        return True
+    navigation_patterns = (
+        r"\bde nghi\b.*\bchu tus\b.*\bso\b.*\btheo doi\b",
+        r"\bchu tus\b.*\bde so\b",
+        r"\bso len truoc\b",
+        r"\bcho xin phan\b",
+        r"\btag\b.*\bphan\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in navigation_patterns)
+
+
 def build_basic_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str:
-    post_text = cleanup_screen_text(post_text, is_comment=False)
+    story_segments = [
+        cleanup_screen_text(segment, is_comment=False)
+        for segment in re.split(r"\n{2,}", post_text or "")
+        if cleanup_screen_text(segment, is_comment=False)
+    ]
+    if not story_segments:
+        cleaned_post = cleanup_screen_text(post_text, is_comment=False)
+        story_segments = [cleaned_post] if cleaned_post else []
+
     comment_texts = [
         cleanup_screen_text(c.get("text", ""), is_comment=True)
         for c in comments
         if cleanup_screen_text(c.get("text", ""), is_comment=True)
     ]
     parts = []
-
-    if post_text:
-        parts.append(f"Bai dang Threads nay dang gay chu y nhu sau: {post_text}")
-    for index, comment in enumerate(comment_texts[:5], start=1):
-        if index == 1:
-            parts.append(f"Comment dau tien noi rang: {comment}")
-        elif index == 2:
-            parts.append(f"Mot y kien khac lai cho rang: {comment}")
-        elif index == 3:
-            parts.append(f"Con co nguoi bo sung them la: {comment}")
-        elif index == 4:
-            parts.append(f"Mot binh luan nua nhan manh rang: {comment}")
-        else:
-            parts.append(f"Y kien cuoi cung cho thay: {comment}")
+    parts.extend(story_segments[:MAX_TOTAL_SEGMENTS])
+    parts.extend(comment_texts[: max(0, MAX_TOTAL_SEGMENTS - len(parts))])
 
     script = "\n".join(parts)
-    return script[:1800]
+    return script[:MAX_SCRIPT_TEXT_LENGTH]
 
 
 def build_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str:
@@ -312,6 +485,8 @@ def build_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str
 def trim_ui_text(text: str) -> str:
     text = clean_text(text)
     text = re.sub(r"\bTop\s+View activity\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bReply\s+to\s+[A-Za-z0-9_.-]+\.{0,3}", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bTranslate\b", " ", text, flags=re.IGNORECASE)
     return clean_text(text)
 
 
@@ -321,16 +496,237 @@ def dedupe_comments(comments: list[dict[str, str]]) -> list[dict[str, str]]:
 
     for comment in comments:
         text = cleanup_screen_text(comment.get("text", ""), is_comment=True)
-        if not text:
+        if not text or is_low_value_comment(text):
             continue
         normalized = re.sub(r"[^0-9A-Za-z\u00c0-\u1ef9]+", "", text.lower())
         # Drop nested duplicate comment text: keep the richer block with author
         if any(normalized and normalized in old for old in seen):
             continue
         seen.add(normalized)
-        unique.append({"text": text})
+        unique.append(
+            {
+                "text": text,
+                "author_name": comment.get("author_name", ""),
+                "author_key": comment.get("author_key", ""),
+            }
+        )
 
     return unique
+
+
+def extract_block_metadata(text: str) -> dict[str, object]:
+    raw_text = clean_text(text)
+    stripped = re.sub(r"^\s*Pinned\s+", "", raw_text, flags=re.IGNORECASE)
+    match = re.match(
+        r"^(?P<author>@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){0,8})\s+\d+\s*[mhdsw]\b(?P<rest>.*)$",
+        stripped,
+        flags=re.IGNORECASE,
+    )
+
+    author_name = ""
+    remainder = stripped
+    if match:
+        author_name = clean_text(match.group("author"))
+        remainder = clean_text(match.group("rest"))
+
+    body_text = cleanup_screen_text(raw_text, is_comment=False)
+    author_key = normalize_search_text(author_name) if author_name else ""
+    has_author_badge = bool(re.search(r"\bAuthor\b", remainder, flags=re.IGNORECASE))
+    has_continuation_marker = bool(
+        CONTINUATION_MARKER_RE.search(remainder) or CONTINUATION_MARKER_RE.search(body_text)
+    )
+
+    return {
+        "author_name": author_name,
+        "author_key": author_key,
+        "has_author_badge": has_author_badge,
+        "has_continuation_marker": has_continuation_marker,
+        "engagement_score": extract_engagement_score(raw_text),
+        "body_text": body_text,
+        "raw_text": raw_text,
+    }
+
+
+def combine_story_segments(post_text: str, continuations: list[dict[str, str]]) -> str:
+    segments = [cleanup_screen_text(post_text, is_comment=False)]
+    segments.extend(
+        cleanup_screen_text(item.get("text", ""), is_comment=False)
+        for item in continuations
+    )
+
+    unique_segments = []
+    seen = set()
+    for segment in segments:
+        if not segment:
+            continue
+        normalized = re.sub(r"[^0-9A-Za-z\u00c0-\u1ef9]+", "", segment.lower())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_segments.append(segment)
+
+    return "\n\n".join(unique_segments)[:MAX_SCRIPT_TEXT_LENGTH]
+
+
+def remove_embedded_continuations_from_post(post_text: str, continuations: list[dict[str, str]]) -> str:
+    cleaned_post = cleanup_screen_text(post_text, is_comment=False)
+    if not cleaned_post or not continuations:
+        return cleaned_post
+
+    continuation_numbers = []
+    for item in continuations:
+        text = cleanup_screen_text(item.get("text", ""), is_comment=False)
+        match = re.search(r"\((\d{1,2})\)", text)
+        if match:
+            continuation_numbers.append(int(match.group(1)))
+
+    if continuation_numbers:
+        first_continuation = min(continuation_numbers)
+        marker = re.search(rf"\({first_continuation}\)", cleaned_post)
+        if marker:
+            return cleanup_screen_text(cleaned_post[: marker.start()], is_comment=False)
+
+    for item in continuations:
+        text = cleanup_screen_text(item.get("text", ""), is_comment=False)
+        if len(text) < 40:
+            continue
+        leading_words = " ".join(text.split()[:8])
+        if leading_words and leading_words in cleaned_post:
+            return cleanup_screen_text(cleaned_post.split(leading_words, 1)[0], is_comment=False)
+
+    return cleaned_post
+
+
+def detected_story_part_numbers(text: str) -> set[int]:
+    numbers = set()
+    for match in re.finditer(r"(?<!\d)\(?([1-9]\d?)\)?\s*/\s*([1-9]\d?)(?!\d)", text or ""):
+        numbers.add(int(match.group(1)))
+    for match in re.finditer(r"(?<!\d)\(([1-9]\d?)\)", text or ""):
+        numbers.add(int(match.group(1)))
+    return numbers
+
+
+def expected_story_part_count(text: str) -> int:
+    totals = [
+        int(match.group(2))
+        for match in re.finditer(r"(?<!\d)\(?([1-9]\d?)\)?\s*/\s*([1-9]\d?)(?!\d)", text or "")
+    ]
+    if totals:
+        return max(totals)
+    numbers = detected_story_part_numbers(text)
+    return max(numbers) if numbers else 0
+
+
+def story_capture_gap(post_text: str, continuations: list[dict[str, str]]) -> tuple[bool, str]:
+    combined = "\n".join([post_text, *[item.get("text", "") for item in continuations]])
+    expected = expected_story_part_count(combined)
+    if expected <= 1:
+        return False, ""
+
+    captured_numbers = detected_story_part_numbers(combined)
+    missing = [number for number in range(1, expected + 1) if number not in captured_numbers]
+    if missing:
+        return True, f"missing story parts {','.join(str(number) for number in missing)}/{expected}"
+    return False, ""
+
+
+def build_content_segments(
+    post_text: str,
+    continuations: list[dict[str, str]],
+    comments: list[dict[str, str]],
+    post_author: str = "",
+) -> list[dict[str, object]]:
+    segments: list[dict[str, object]] = []
+    image_index = 0
+    post_author_key = normalize_search_text(post_author)
+
+    cleaned_post = cleanup_screen_text(post_text, is_comment=False)
+    if cleaned_post:
+        segments.append(
+            {
+                "type": "post",
+                "text": cleaned_post,
+                "image_index": image_index,
+                "author_name": post_author,
+                "author_key": post_author_key,
+            }
+        )
+
+    for item in continuations:
+        cleaned = cleanup_screen_text(item.get("text", ""), is_comment=False)
+        if not cleaned:
+            continue
+        image_index += 1
+        segments.append(
+            {
+                "type": "continuation",
+                "text": cleaned,
+                "image_index": image_index,
+                "author_name": item.get("author_name", post_author),
+                "author_key": item.get("author_key", post_author_key),
+            }
+        )
+
+    for item in comments:
+        cleaned = cleanup_screen_text(item.get("text", ""), is_comment=True)
+        if not cleaned:
+            continue
+        image_index += 1
+        segments.append(
+            {
+                "type": "comment",
+                "text": cleaned,
+                "image_index": image_index,
+                "author_name": item.get("author_name", ""),
+                "author_key": item.get("author_key", ""),
+            }
+        )
+
+    return segments
+
+
+def detect_content_mode(post_text: str, continuations: list[dict[str, str]], comments: list[dict[str, str]]) -> str:
+    if continuations:
+        return "story"
+
+    normalized_post = normalize_search_text(post_text)
+    discussion_hits = [keyword for keyword in DISCUSSION_KEYWORDS if keyword in normalized_post]
+    reasoning_comments = [
+        comment for comment in comments
+        if any(keyword in normalize_search_text(comment.get("text", "")) for keyword in COMMENT_REASONING_KEYWORDS)
+    ]
+    if discussion_hits or len(reasoning_comments) >= 2 or len(comments) >= 4:
+        return "discussion"
+    return "general"
+
+
+def is_continuation_block(block: dict, post_block: dict, sequence_index: int, post_author: str = "") -> bool:
+    block_meta = block.get("meta", {})
+    post_meta = post_block.get("meta", {})
+    block_author_key = str(block_meta.get("author_key") or "")
+    post_author_key = str(post_meta.get("author_key") or "")
+    same_author = bool(block_author_key) and (
+        (post_author_key and block_author_key == post_author_key)
+        or (post_author and block_author_key == normalize_search_text(post_author))
+    )
+    if not same_author:
+        return False
+
+    if block_meta.get("has_continuation_marker"):
+        return True
+
+    post_has_split_marker = bool(post_meta.get("has_continuation_marker"))
+    if post_has_split_marker and sequence_index <= 2:
+        body_text = str(block_meta.get("body_text") or "")
+        if len(body_text.split()) >= 18:
+            return True
+
+    if block_meta.get("has_author_badge") and sequence_index == 1:
+        body_text = str(block_meta.get("body_text") or "")
+        if len(body_text.split()) >= 24:
+            return True
+
+    return False
 
 
 async def first_visible(page: Page, selectors: list[str], timeout_ms: int):
@@ -441,6 +837,29 @@ async def prepare_threads_page(page: Page) -> None:
             const rect = el.getBoundingClientRect();
             if (rect.y <= 5 && rect.height < 120) el.style.display = 'none';
           }
+
+          for (const el of document.querySelectorAll('[role="tooltip"], [aria-live], [data-visualcompletion="ignore"]')) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 20 && rect.height > 10) el.style.display = 'none';
+          }
+
+          for (const el of document.querySelectorAll('body *')) {
+            const style = window.getComputedStyle(el);
+            if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+            const rect = el.getBoundingClientRect();
+            const z = Number.parseInt(style.zIndex || '0', 10) || 0;
+            const text = (el.innerText || '').trim();
+            const looksLikeOverlay =
+              z >= 10 &&
+              rect.width > 40 &&
+              rect.height > 20 &&
+              rect.left < window.innerWidth &&
+              rect.top < window.innerHeight &&
+              !el.closest('[role="main"], main, article');
+            if (looksLikeOverlay || /correctly on|translate|reply to/i.test(text)) {
+              el.style.display = 'none';
+            }
+          }
         }
         """
     )
@@ -486,7 +905,15 @@ async def get_pressable_blocks(page: Page) -> list[dict]:
             box = await handle.bounding_box()
             if not box:
                 continue
-            blocks.append({"index": index, "handle": handle, "text": text, "rect": box})
+            blocks.append(
+                {
+                    "index": index,
+                    "handle": handle,
+                    "text": text,
+                    "rect": box,
+                    "meta": extract_block_metadata(text),
+                }
+            )
         except Exception:
             continue
 
@@ -506,10 +933,14 @@ def is_reasonable_pressable(block: dict) -> bool:
     return not any(fragment.lower() in text.lower() for fragment in noise)
 
 
-def choose_post_and_comments(blocks: list[dict], max_comments: int) -> tuple[dict | None, list[dict]]:
+def choose_post_and_comments(
+    blocks: list[dict],
+    post_author: str,
+    max_comments: int,
+) -> tuple[dict | None, list[dict], list[dict], str]:
     reasonable = [block for block in blocks if is_reasonable_pressable(block)]
     if not reasonable:
-        return None, []
+        return None, [], [], "general"
 
     vietnamese_blocks = [block for block in reasonable if is_vietnamese(block.get("text", ""))]
     post_candidates = sorted(
@@ -525,9 +956,10 @@ def choose_post_and_comments(blocks: list[dict], max_comments: int) -> tuple[dic
     post_y = post_rect.get("y", 0)
     post_bottom = post_y + post_rect.get("height", 0)
 
-    comments = []
+    continuation_blocks = []
+    regular_comments = []
     seen = {clean_text(post_block.get("text", ""))[:180]}
-    for block in reasonable:
+    for sequence_index, block in enumerate(reasonable, start=1):
         if block is post_block:
             continue
 
@@ -544,11 +976,30 @@ def choose_post_and_comments(blocks: list[dict], max_comments: int) -> tuple[dic
             continue
 
         seen.add(text_key)
-        comments.append(block)
-        if len(comments) >= max_comments:
-            break
+        if is_continuation_block(block, post_block, sequence_index, post_author):
+            continuation_blocks.append(block)
+            continue
+        regular_comments.append(block)
 
-    return post_block, comments
+    continuation_blocks.sort(key=lambda block: block.get("rect", {}).get("y", 99999))
+    regular_comments.sort(
+        key=lambda block: (
+            -int(block.get("meta", {}).get("engagement_score") or 0),
+            block.get("rect", {}).get("y", 99999),
+        )
+    )
+
+    if continuation_blocks:
+        # Story-first rule: fill slots with the author's continuation blocks first,
+        # then use any remaining room for outside comments.
+        selected_continuations = continuation_blocks[: min(MAX_STORY_CONTINUATIONS, max_comments)]
+        remaining_slots = max(0, max_comments - len(selected_continuations))
+        selected_comments = regular_comments[:remaining_slots]
+        return post_block, selected_continuations, selected_comments, "story"
+
+    selected_comments = regular_comments[: max(max_comments, TARGET_DISCUSSION_COMMENT_COUNT)]
+    mode = "discussion" if len(selected_comments) >= 2 else "general"
+    return post_block, [], selected_comments, mode
 
 
 async def refresh_block_box(block: dict) -> dict:
@@ -600,62 +1051,145 @@ async def trim_post_rect_before_discussion_toolbar(page: Page, rect: dict) -> di
     return rect
 
 
-async def screenshot_clip(page: Page, rect: dict, output_path: Path, padding: int = 8) -> None:
+async def screenshot_clip(page: Page, rect: dict, output_path: Path, padding: int = 8) -> bool:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     viewport = page.viewport_size or {"width": 1365, "height": 900}
-    x = max(0, float(rect.get("x", 0)) - padding)
-    y = max(0, float(rect.get("y", 0)) - padding)
-    width = float(rect.get("width", 1)) + padding * 2
-    height = float(rect.get("height", 1)) + padding * 2
-    width = min(width, max(1, viewport["width"] - x))
-    height = min(height, max(1, viewport["height"] - y))
+    viewport_width = float(viewport["width"])
+    viewport_height = float(viewport["height"])
+
+    left = float(rect.get("x", 0)) - padding
+    top = float(rect.get("y", 0)) - padding
+    right = float(rect.get("x", 0)) + float(rect.get("width", 0)) + padding
+    bottom = float(rect.get("y", 0)) + float(rect.get("height", 0)) + padding
+
+    x = max(0.0, min(left, viewport_width))
+    y = max(0.0, min(top, viewport_height))
+    right = max(0.0, min(right, viewport_width))
+    bottom = max(0.0, min(bottom, viewport_height))
+    width = right - x
+    height = bottom - y
+
+    if width < 1 or height < 1:
+        log(
+            "Skipping screenshot clip outside viewport: "
+            f"rect={rect} viewport={viewport}"
+        )
+        return False
 
     await page.screenshot(
         path=str(output_path),
-        clip={"x": x, "y": y, "width": max(1, width), "height": max(1, height)},
+        clip={"x": x, "y": y, "width": width, "height": height},
     )
+    return True
 
 
-async def screenshot_post_and_comments(page: Page, post_id: str, post_dir: Path, max_comments: int) -> tuple[dict, dict]:
+async def screenshot_block(page: Page, block: dict, output_path: Path, padding: int = 8) -> bool:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = block.get("handle")
+    if handle:
+        try:
+            await handle.scroll_into_view_if_needed(timeout=5000)
+            try:
+                await page.keyboard.press("Escape")
+            except Exception:
+                pass
+            await page.mouse.move(1, 1)
+            await prepare_threads_page(page)
+            await page.wait_for_timeout(250)
+            await wait_for_element_media(page, handle)
+            await handle.screenshot(path=str(output_path), timeout=8000)
+            return True
+        except Exception as exc:
+            log(f"Element screenshot failed, falling back to viewport clip: {exc}")
+
+    rect = await refresh_block_box(block)
+    return await screenshot_clip(page, rect, output_path, padding=padding)
+
+
+async def screenshot_post_and_comments(
+    page: Page,
+    post_id: str,
+    post_dir: Path,
+    max_comments: int,
+    url: str = "",
+) -> tuple[dict, dict]:
     post_path = post_dir / "post.png"
     comments_dir = post_dir / "comments"
     best_post_block = None
+    best_continuation_blocks: list[dict] = []
     best_comment_blocks: list[dict] = []
+    best_mode = "general"
+    post_author = extract_author_from_url(url)
+    accumulated_continuations: list[dict] = []
+    accumulated_comments: list[dict] = []
+    accumulated_keys: set[str] = set()
 
     await prepare_threads_page(page)
     await page.locator(POST_LOCATOR).first.wait_for(state="visible", timeout=10000)
 
     for attempt in range(1, MAX_COMMENT_CAPTURE_ATTEMPTS + 1):
         blocks = await get_pressable_blocks(page)
-        post_block, comment_blocks = choose_post_and_comments(blocks, max_comments)
+        post_block, continuation_blocks, comment_blocks, detected_mode = choose_post_and_comments(blocks, post_author, max_comments)
 
-        if post_block and len(comment_blocks) > len(best_comment_blocks):
+        if post_block and not best_post_block:
             best_post_block = post_block
+
+        active_post_block = best_post_block or post_block
+        if active_post_block:
+            sequence_index = len(accumulated_continuations) + len(accumulated_comments) + 1
+            post_key = clean_text(active_post_block.get("text", ""))[:180]
+            for block in [item for item in blocks if is_reasonable_pressable(item)]:
+                if block is active_post_block:
+                    continue
+                text = clean_text(block.get("text", ""))
+                key = text[:180]
+                if not text or key == post_key or key in accumulated_keys:
+                    continue
+                if not is_vietnamese(text):
+                    continue
+                accumulated_keys.add(key)
+                if is_continuation_block(block, active_post_block, sequence_index, post_author):
+                    accumulated_continuations.append(block)
+                else:
+                    accumulated_comments.append(block)
+                sequence_index += 1
+
+        current_total = len(continuation_blocks) + len(comment_blocks)
+        best_total = len(best_continuation_blocks) + len(best_comment_blocks)
+        if post_block and current_total > best_total:
+            best_post_block = post_block
+            best_continuation_blocks = continuation_blocks
             best_comment_blocks = comment_blocks
+            best_mode = detected_mode
 
         log(
             f"Comment capture attempt {attempt}/{MAX_COMMENT_CAPTURE_ATTEMPTS}: "
-            f"found {len(comment_blocks)} comment blocks"
+            f"found {len(continuation_blocks)} continuations and {len(comment_blocks)} comments; "
+            f"accumulated {len(accumulated_continuations)} continuations and {len(accumulated_comments)} comments"
         )
 
-        if post_block and len(comment_blocks) >= max_comments:
-            best_post_block = post_block
-            best_comment_blocks = comment_blocks
+        target_total = MAX_STORY_CONTINUATIONS if detected_mode == "story" else max(max_comments, TARGET_DISCUSSION_COMMENT_COUNT)
+        accumulated_total = len(accumulated_continuations) + len(accumulated_comments)
+        if active_post_block and accumulated_total >= target_total:
+            best_post_block = active_post_block
+            best_continuation_blocks = accumulated_continuations
+            best_comment_blocks = accumulated_comments
+            best_mode = detected_mode
             break
 
         if attempt < MAX_COMMENT_CAPTURE_ATTEMPTS:
             await page.evaluate("window.scrollBy(0, window.innerHeight * 0.9)")
             await page.wait_for_timeout(COMMENT_CAPTURE_WAIT_MS)
             await prepare_threads_page(page)
-            if post_block:
-                try:
-                    await post_block["handle"].scroll_into_view_if_needed(timeout=5000)
-                except Exception:
-                    pass
-                await page.wait_for_timeout(800)
 
     post_block = best_post_block
-    comment_blocks = best_comment_blocks
+    if accumulated_continuations or accumulated_comments:
+        continuation_blocks = accumulated_continuations[: min(MAX_STORY_CONTINUATIONS, max_comments)]
+        remaining_slots = max(0, max_comments - len(continuation_blocks))
+        comment_blocks = accumulated_comments[:remaining_slots]
+    else:
+        continuation_blocks = best_continuation_blocks
+        comment_blocks = best_comment_blocks
 
     if not post_block:
         log("Could not isolate post block from pressable containers; falling back to first visible post area.")
@@ -665,22 +1199,40 @@ async def screenshot_post_and_comments(page: Page, post_id: str, post_dir: Path,
     await wait_for_element_media(page, post_block["handle"])
     post_rect = await refresh_block_box(post_block)
     post_rect = await trim_post_rect_before_discussion_toolbar(page, post_rect)
-    await screenshot_clip(page, post_rect, post_path, padding=8)
+    if not await screenshot_clip(page, post_rect, post_path, padding=8):
+        log("Could not capture isolated post clip; falling back to primary visible area.")
+        await screenshot_primary_area(page, post_path)
 
     comment_paths = []
     extracted_comments = []
-    for index, block in enumerate(comment_blocks, start=1):
+    extracted_continuations = []
+    ordered_blocks = continuation_blocks + comment_blocks
+    for index, block in enumerate(ordered_blocks, start=1):
         comment_path = comments_dir / f"comment_{index:02d}.png"
-        comment_rect = await refresh_block_box(block)
-        await wait_for_element_media(page, block["handle"])
-        await screenshot_clip(page, comment_rect, comment_path, padding=8)
+        captured = await screenshot_block(page, block, comment_path, padding=8)
+        if not captured:
+            log(f"Skipping extracted block without screenshot: index={index}")
+            continue
+
         comment_paths.append(str(comment_path))
-        extracted_comments.append({"text": trim_ui_text(block.get("text", ""))})
+        cleaned_text = trim_ui_text(block.get("text", ""))
+        meta = block.get("meta", {})
+        content_item = {
+            "text": cleaned_text,
+            "author_name": meta.get("author_name", ""),
+            "author_key": meta.get("author_key", ""),
+        }
+        if is_continuation_block(block, post_block, index, post_author):
+            extracted_continuations.append(content_item)
+        else:
+            extracted_comments.append(content_item)
 
     screenshots = {"post": str(post_path), "comments": comment_paths}
     extracted = {
         "post_text": cleanup_screen_text(post_block.get("text", ""), is_comment=False),
+        "continuations": dedupe_comments(extracted_continuations),
         "comments": dedupe_comments(extracted_comments),
+        "capture_mode": best_mode,
     }
     return screenshots, extracted
 
@@ -723,23 +1275,50 @@ async def process_post(post_id: str, url: str, config: Config) -> dict:
                 page,
                 post_id=post_id,
                 post_dir=post_dir,
-                max_comments=TARGET_COMMENT_COUNT,
+                max_comments=MAX_TOTAL_SEGMENTS,
+                url=url,
             )
             content = await extract_visible_content(page)
 
-            post_text = cleanup_screen_text(isolated_content.get("post_text", ""), is_comment=False) or cleanup_screen_text(content.get("post_text", ""), is_comment=False)
+            continuation_blocks = dedupe_comments([
+                {
+                    "text": cleanup_screen_text(comment.get("text", ""), is_comment=False),
+                    "author_name": comment.get("author_name", ""),
+                    "author_key": comment.get("author_key", ""),
+                }
+                for comment in (isolated_content.get("continuations", []) or [])
+                if cleanup_screen_text(comment.get("text", ""), is_comment=False)
+            ])
+            base_post_text = (
+                cleanup_screen_text(isolated_content.get("post_text", ""), is_comment=False)
+                or cleanup_screen_text(content.get("post_text", ""), is_comment=False)
+            )
+            base_post_text = remove_embedded_continuations_from_post(base_post_text, continuation_blocks)
+            post_text = combine_story_segments(base_post_text, continuation_blocks)
             comments = dedupe_comments([
-                {"text": cleanup_screen_text(comment.get("text", ""), is_comment=True)}
-                for comment in (isolated_content.get("comments", []) or content.get("comments", []))
+                {
+                    "text": cleanup_screen_text(comment.get("text", ""), is_comment=True),
+                    "author_name": comment.get("author_name", ""),
+                    "author_key": comment.get("author_key", ""),
+                }
+                for comment in (isolated_content.get("comments", []) or [])
                 if cleanup_screen_text(comment.get("text", ""), is_comment=True)
             ])
-            narrator_script = build_narrator_script(post_text, comments)
+            content_mode = detect_content_mode(base_post_text, continuation_blocks, comments)
+            script_comments = comments[:2] if content_mode == "story" else comments
+            narrator_script = build_narrator_script(post_text, script_comments)
             comment_count = len(comments)
-            content_ok, content_reason = classify_content_quality(post_text, comments)
+            continuation_count = len(continuation_blocks)
+            supporting_block_count = comment_count + continuation_count
+            content_ok, content_reason = classify_content_quality(post_text, comments, continuation_blocks)
+            story_incomplete, story_gap_reason = story_capture_gap(base_post_text, continuation_blocks)
 
             extracted = {
                 "post_text": post_text,
+                "continuations": continuation_blocks,
                 "comments": comments,
+                "segments": build_content_segments(base_post_text, continuation_blocks, script_comments, post_author=extract_author_from_url(url)),
+                "content_mode": content_mode,
                 "page_title": content.get("page_title", ""),
                 "current_url": content.get("current_url", page.url),
             }
@@ -747,24 +1326,30 @@ async def process_post(post_id: str, url: str, config: Config) -> dict:
             screenshot_comment_count = len(screenshots.get("comments", []))
             note = (
                 f"Phase 2: isolated post screenshot + {screenshot_comment_count} comment screenshots; "
-                f"extracted {comment_count} comments"
+                f"extracted {comment_count} comments and {continuation_count} continuation parts mode={content_mode}"
             )
             status = "In Progress"
+            min_required_blocks = 2 if content_mode == "story" else MIN_ACCEPTED_COMMENT_COUNT
+            target_blocks = MAX_STORY_CONTINUATIONS if content_mode == "story" else TARGET_DISCUSSION_COMMENT_COUNT
+
             if not post_text:
                 note = "Phase 2 warning: screenshot saved but no text extracted"
                 status = "Rejected"
-            elif comment_count < MIN_ACCEPTED_COMMENT_COUNT:
+            elif story_incomplete:
+                note = f"Phase 2 rejected: incomplete author story capture ({story_gap_reason})"
+                status = "Rejected"
+            elif supporting_block_count < min_required_blocks:
                 note = (
-                    f"Phase 2 rejected: only extracted {comment_count}/{TARGET_COMMENT_COUNT} comments "
+                    f"Phase 2 rejected: only extracted {supporting_block_count}/{target_blocks} supporting blocks "
                     f"after {MAX_COMMENT_CAPTURE_ATTEMPTS} attempts"
                 )
                 status = "Rejected"
             elif not content_ok:
                 note = f"Phase 2 rejected: {content_reason}"
                 status = "Rejected"
-            elif comment_count < TARGET_COMMENT_COUNT:
+            elif supporting_block_count < target_blocks:
                 note = (
-                    f"Phase 2 warning: extracted {comment_count}/{TARGET_COMMENT_COUNT} comments "
+                    f"Phase 2 warning: extracted {supporting_block_count}/{target_blocks} supporting blocks "
                     f"after {MAX_COMMENT_CAPTURE_ATTEMPTS} attempts"
                 )
 
@@ -816,7 +1401,7 @@ def resolve_path(value: str) -> Path:
 
 
 def main() -> int:
-    load_dotenv(PROJECT_ROOT / ".env")
+    load_dotenv(PROJECT_ROOT / ".env", override=True)
     args = parse_args()
 
     if not args.username or not args.password:

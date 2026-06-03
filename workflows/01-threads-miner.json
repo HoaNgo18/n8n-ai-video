@@ -61,6 +61,89 @@
     },
     {
       "parameters": {
+        "jsCode": "function cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nconst env = (typeof process !== 'undefined' && process.env) ? process.env : {};\nconst enabled = ['1', 'true', 'yes'].includes(String(env.THREADS_CLASSIFIER_ENABLED || 'true').trim().toLowerCase());\nconst model = String(env.THREADS_CLASSIFIER_MODEL || 'gemini-2.5-flash-lite').trim();\n\nreturn $input.all().map(item => {\n  const preview = cleanText(item.json.text_preview || '');\n  const fitScore = Number(item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(item.json.content_fit_tags) ? item.json.content_fit_tags : [];\n  const engagementScore = Number(item.json.engagement_score || 0);\n  const engagementMetrics = Array.isArray(item.json.engagement_metrics) ? item.json.engagement_metrics : [];\n  const strongestMetric = Number(item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(item.json.engagement_metric_count || 0);\n\n  item.json._classifier = {\n    enabled,\n    model,\n    preview,\n    fitScore,\n    fitTags,\n    engagementScore,\n    engagementMetrics,\n    strongestMetric,\n    metricCount,\n    prompt: [\n      'Ban la bo loc noi dung cho kenh video ngan tieng Viet.',\n      'Hay danh gia preview cua mot bai Threads xem co nen dua vao pipeline lam video binh luan hay ke chuyen dang hot khong.',\n      'CHI GIU lai cac bai co chat lieu ro rang cho mot trong ba huong: discussion (gay tranh luan, hoi y kien, co goc nhin, co the binh luan them), story_hot (dang ke mot cau chuyen, drama, tinh huong hot, co dien bien de tom tat), hoac topic_hot (ban ve chu de xa hoi dang nong nhu thoi tiet, gia nha, kinh te, chinh tri, giao thong, hoc phi, luong, van de cong chung).',\n      'UU TIEN bai co dau hieu tuong tac that su, dac biet khi metric_count >= 2 hoac strongest_metric cao. NEU preview qua chung chung, qua doi thuong, hoac khong mo ra goc de ban luan/chia se thi phai reject.',\n      'LOAI bo cac bai chi la anh/video doi thuong, status vo thuong vo phat, cau cam than ngan, caption linh tinh, ban hang, self-promo, repost vo nghia, hoac post khong du chat lieu de lam video 30-60 giay.',\n      'Duoc phep dung fit score va engagement lam ngu canh phu, nhung quyet dinh chinh phai dua tren noi dung text preview.',\n      'Tra ve DUY NHAT mot JSON hop le theo schema: {\"decision\":\"keep|reject\",\"angle\":\"discussion|story_hot|topic_hot|reject\",\"confidence\":0.0,\"reason\":\"...\"}.',\n      'reason phai ngan gon, neu reject thi noi ro ly do chinh.',\n    ].join(' '),\n  };\n\n  return item;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2384,
+        1008
+      ],
+      "id": "0ff09081-2a35-4b4d-a611-345cb4de6ab5",
+      "name": "Prepare AI Classifier Payload"
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json._classifier.model ? 'models/' + $json._classifier.model.replace(/^models\\//, '') : 'models/gemini-2.5-flash-lite' }}"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json._classifier.prompt + '\\n\\nTEXT_PREVIEW:\\n' + ($json._classifier.preview || '') + '\\n\\nFIT_SCORE: ' + $json._classifier.fitScore + '\\nFIT_TAGS: ' + (($json._classifier.fitTags || []).join(', ') || 'none') + '\\nENGAGEMENT_SCORE: ' + $json._classifier.engagementScore + '\\nENGAGEMENT_METRICS: ' + JSON.stringify($json._classifier.engagementMetrics || []) + '\\nSTRONGEST_METRIC: ' + ($json._classifier.strongestMetric || 0) + '\\nMETRIC_COUNT: ' + ($json._classifier.metricCount || 0) + '\\n\\nNhac lai: chi tra ve JSON hop le, khong them giai thich.' }}",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": false,
+        "jsonOutput": true,
+        "builtInTools": {},
+        "options": {
+          "maxOutputTokens": 300,
+          "temperature": 0.2,
+          "topP": 0.8
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        2608,
+        1008
+      ],
+      "id": "0c943854-b5c2-424f-8273-2414707fe48b",
+      "name": "Gemini Content Classifier",
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "hudWq13w7XVtO8Q6",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2832,
+        1136
+      ],
+      "id": "34592b31-9bb3-4869-a1bf-418c2548dd9d",
+      "name": "Merge Classifier Result"
+    },
+    {
+      "parameters": {
+        "jsCode": "function cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction parseJsonCandidate(text) {\n  const cleaned = cleanText(text);\n  if (!cleaned) return null;\n\n  const fencedMatch = cleaned.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  const jsonSource = fencedMatch ? fencedMatch[1] : cleaned;\n  const braceMatch = jsonSource.match(/\\{[\\s\\S]*\\}/);\n  const candidate = braceMatch ? braceMatch[0] : jsonSource;\n\n  try {\n    const parsed = JSON.parse(candidate);\n    return parsed && typeof parsed === 'object' ? parsed : null;\n  } catch (error) {\n    return null;\n  }\n}\n\nfunction extractTextDeep(value, bucket = []) {\n  if (typeof value === 'string') {\n    const cleaned = cleanText(value);\n    if (cleaned) bucket.push(cleaned);\n    return bucket;\n  }\n\n  if (!value || typeof value !== 'object') return bucket;\n  if (Array.isArray(value)) {\n    value.forEach(entry => extractTextDeep(entry, bucket));\n    return bucket;\n  }\n\n  Object.values(value).forEach(entry => {\n    if (typeof entry === 'string') {\n      const cleaned = cleanText(entry);\n      if (cleaned) bucket.push(cleaned);\n    } else if (entry && typeof entry === 'object') {\n      extractTextDeep(entry, bucket);\n    }\n  });\n  return bucket;\n}\n\nfunction extractClassifierDecision(data) {\n  if (!data || typeof data !== 'object') return null;\n\n  const direct = [data.output, data.text, data.content, data.message, data.response].filter(Boolean);\n  for (const candidate of direct) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  for (const candidate of extractTextDeep(data, [])) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  return null;\n}\n\nconst kept = [];\n\nfor (const item of $input.all()) {\n  const classifier = item.json._classifier || {};\n  const preview = cleanText(classifier.preview || item.json.text_preview || '');\n  const fitScore = Number(classifier.fitScore || item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(classifier.fitTags || item.json.content_fit_tags) ? (classifier.fitTags || item.json.content_fit_tags) : [];\n  const strongestMetric = Number(classifier.strongestMetric || item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(classifier.metricCount || item.json.engagement_metric_count || 0);\n  const classifierEnabled = classifier.enabled !== false;\n  const fallbackKeep = fitScore >= 4 && preview.length >= 110 && metricCount >= 2 && (fitTags.includes('discussion') || fitTags.includes('story') || fitTags.includes('topic-hot'));\n  const parsed = classifierEnabled ? extractClassifierDecision(item.json) : null;\n\n  let decision = fallbackKeep ? 'keep' : 'reject';\n  let angle = fitTags.includes('discussion') ? 'discussion' : (fitTags.includes('story') ? 'story_hot' : (fitTags.includes('topic-hot') ? 'topic_hot' : 'reject'));\n  let confidence = fallbackKeep ? 0.6 : 0.35;\n  let reason = fallbackKeep\n    ? `heuristic keep fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} tags=${fitTags.join(',') || 'none'}`\n    : `heuristic reject fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} preview_too_weak`;\n\n  if (!classifierEnabled) {\n    reason = `ai disabled; ${reason}`;\n  } else if (parsed) {\n    const parsedDecision = cleanText(parsed.decision || '').toLowerCase();\n    const parsedAngle = cleanText(parsed.angle || '').toLowerCase();\n    const parsedReason = cleanText(parsed.reason || '');\n    const parsedConfidence = Number(parsed.confidence || 0);\n    if ((parsedDecision === 'keep' || parsedDecision === 'reject') && ['discussion', 'story_hot', 'topic_hot', 'reject'].includes(parsedAngle || 'reject')) {\n      decision = parsedDecision;\n      angle = parsedAngle || (parsedDecision === 'keep' ? 'discussion' : 'reject');\n      confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : confidence;\n      reason = parsedReason || reason;\n    }\n  } else {\n    reason = `ai fallback; ${reason}`;\n  }\n\n  item.json._classifier_decision = decision;\n  item.json._classifier_angle = angle;\n  item.json._classifier_confidence = Math.max(0, Math.min(1, confidence || 0));\n  item.json._classifier_reason = reason;\n\n  if (decision === 'keep' && ['discussion', 'story_hot', 'topic_hot'].includes(angle)) {\n    kept.push(item);\n  }\n}\n\nreturn kept;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3056,
+        1136
+      ],
+      "id": "9f347b2d-fae5-4424-b0aa-1731c3c67652",
+      "name": "Finalize AI Classifier"
+    },
+    {
+      "parameters": {
         "assignments": {
           "assignments": [
             {
@@ -90,7 +173,7 @@
             {
               "id": "f5",
               "name": "Note",
-              "value": "={{ 'score=' + ($json.engagement_score || 0) + ' metrics=' + JSON.stringify($json.engagement_metrics || []) + ' | ' + ($json.text_preview || '') }}",
+              "value": "={{ 'score=' + ($json.engagement_score || 0) + ' fit=' + ($json.content_fit_score || 0) + ' strongest=' + ($json.engagement_strongest_metric || 0) + ' metricCount=' + ($json.engagement_metric_count || 0) + ' ai=' + ($json._classifier_angle || 'unknown') + ' conf=' + ($json._classifier_confidence || 0) + ' metrics=' + JSON.stringify($json.engagement_metrics || []) + ' reason=' + ($json._classifier_reason || '') + ' | ' + ($json.text_preview || '') }}",
               "type": "string"
             }
           ]
@@ -100,8 +183,8 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        2384,
-        1008
+        3280,
+        1136
       ],
       "id": "36fa86c1-378f-4f4f-99d5-df8fa5a93f8f",
       "name": "Normalize Sheet Row"
@@ -152,7 +235,7 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [
-        2720,
+        3616,
         1120
       ],
       "id": "1ae481c6-c58a-40be-ae4b-c9a2c33ab0b5",
@@ -290,7 +373,7 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        2928,
+        3824,
         1120
       ],
       "id": "e504d7a4-79fa-4713-87e9-5ef90bfabcce",
@@ -348,6 +431,55 @@
       ]
     },
     "Parse JSON Output": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI Classifier Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Classifier Payload": {
+      "main": [
+        [
+          {
+            "node": "Merge Classifier Result",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "Gemini Content Classifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Content Classifier": {
+      "main": [
+        [
+          {
+            "node": "Merge Classifier Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Classifier Result": {
+      "main": [
+        [
+          {
+            "node": "Finalize AI Classifier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize AI Classifier": {
       "main": [
         [
           {

@@ -44,8 +44,18 @@ DEFAULT_VISUALS_DIR = "runtime/data/visuals"
 DEFAULT_VIDEOS_DIR = "runtime/data/videos"
 DEFAULT_TEMP_DIR = "runtime/data/temp"
 DEFAULT_TTS_VOICE = "vi-VN-HoaiMyNeural"
+DEFAULT_DISCUSSION_VOICES: list[str] = []
+DEFAULT_AUTHOR_VOICES: list[str] = []
+DEFAULT_EDGE_TTS_RATE = "+12%"
 FPT_TTS_URL = "https://api.fpt.ai/hmi/tts/v5"
 OVERLAY_TOP_RATIO = 0.25
+MAX_OVERLAY_IMAGES = 40
+VISUAL_TIMING_LEAD_SECONDS = float(os.getenv("VISUAL_TIMING_LEAD_SECONDS", "2.0"))
+AUDIO_TRIM_SEGMENT_SILENCE = str(os.getenv("AUDIO_TRIM_SEGMENT_SILENCE", "false")).strip().lower() in {"1", "true", "yes"}
+AUDIO_SILENCE_THRESHOLD_DB = os.getenv("AUDIO_SILENCE_THRESHOLD_DB", "-45dB")
+AUDIO_LEADING_SILENCE_SECONDS = float(os.getenv("AUDIO_LEADING_SILENCE_SECONDS", "0.08"))
+AUDIO_TRAILING_SILENCE_SECONDS = float(os.getenv("AUDIO_TRAILING_SILENCE_SECONDS", "0.18"))
+AUDIO_SEGMENT_OVERLAP_SECONDS = max(0.0, float(os.getenv("AUDIO_SEGMENT_OVERLAP_SECONDS", "0.15")))
 
 
 def log(message: str) -> None:
@@ -160,9 +170,174 @@ def probe_duration(path: Path) -> float:
     return hours * 3600 + minutes * 60 + seconds
 
 
+def normalize_tts_shorthand(text: str) -> str:
+    text = str(text or "")
+    replacements = [
+        (r"\bbọn\s+tớ\b", "bọn tao"),
+        (r"\btụi\s+tớ\b", "tụi tao"),
+        (r"\bbọn\s+t\b", "bọn tao"),
+        (r"\btụi\s+t\b", "tụi tao"),
+        (r"\bbon\s+t\b", "bon tao"),
+        (r"\btớ\b", "tao"),
+        (r"\bcmay\b", "chúng mày"),
+        (r"\bcm\b", "chúng mày"),
+        (r"\btui\b", "tôi"),
+        (r"\bt\b", "tao"),
+        (r"\bm\b", "mày"),
+        (r"\bmng\b", "mọi người"),
+        (r"\bmn\b", "mọi người"),
+        (r"\bnma\b", "nhưng mà"),
+        (r"\bko\b", "không"),
+        (r"\bkh\b", "không"),
+        (r"\bk\b", "không"),
+        (r"\br\b", "rồi"),
+        (r"\bny\b", "người yêu"),
+        (r"\bđt\b", "điện thoại"),
+        (r"\bdt\b", "điện thoại"),
+        (r"\bđvi\b", "định vị"),
+        (r"\bdvi\b", "định vị"),
+        (r"\blsao\b", "làm sao"),
+        (r"\bsđt\b", "số điện thoại"),
+        (r"\bsdt\b", "số điện thoại"),
+        (r"\bgg\s+map\b", "Google Maps"),
+        (r"\bvs\b", "với"),
+        (r"\bv\b", "vậy"),
+    ]
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
+def clean_tts_segment_text(text: str) -> str:
+    text = str(text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(
+        r"^(?:Pinned\s+)?@?[A-Za-z0-9_.-]{3,}\s+\d+\s*[smhdw]\b\s*",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    text = re.sub(
+        r"^@?[A-Za-z0-9_.-]{3,}\s+\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?[\s:.,;-]*",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    text = re.sub(r"^@?[A-Za-z0-9.]*_[A-Za-z0-9_.-]*\b[\s:.,;-]*", " ", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?[\s:.,;-]*", " ", text)
+    text = re.sub(r"(?<!\d)\(\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)(?!\d)", " ", text)
+    text = re.sub(r"\bTranslate\b\s*\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:Reply|Like|Share|Repost|View activity|Top)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:\s+\d+(?:[.,]\d+)?[KMkm]?){1,4}\s*$", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def strip_leading_author_label(text: str, *author_values: object) -> str:
+    cleaned = str(text or "").strip()
+    candidates = []
+    for value in author_values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        candidates.extend(
+            [
+                raw,
+                raw.lstrip("@"),
+                raw.replace("@", ""),
+                raw.replace("_", " "),
+            ]
+        )
+
+    for candidate in sorted({item for item in candidates if item}, key=len, reverse=True):
+        escaped = re.escape(candidate)
+        cleaned = re.sub(rf"^@?{escaped}\b[\s:.,;-]*", " ", cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned
+
+
 def clean_script(text: str) -> str:
+    text = clean_tts_segment_text(text)
+    text = normalize_tts_shorthand(text)
     text = re.sub(r"\s+", " ", text or "").strip()
     return text[:4800]
+
+
+def normalize_line_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def extract_json_script_candidate(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+
+    candidates = [raw]
+    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw, flags=re.IGNORECASE)
+    if fenced_match:
+        candidates.append(fenced_match.group(1).strip())
+
+    brace_matches = re.findall(r"\{[\s\S]*?\}", raw)
+    candidates.extend(brace_matches)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            script = parsed.get("script") or parsed.get("narrator_script")
+            if isinstance(script, str) and script.strip():
+                return script.strip()
+        if isinstance(parsed, str) and parsed.strip():
+            return parsed.strip()
+
+    return ""
+
+
+def build_segment_script(extracted_content: str | None) -> str:
+    segments = parse_extracted_segments(extracted_content)
+    if not segments:
+        return ""
+    lines = []
+    seen = set()
+    for item in segments:
+        text = normalize_line_text(str(item.get("text") or ""))
+        key = re.sub(r"[^0-9a-z\u00c0-\u1ef9]+", "", text.lower())
+        if not text or not key or key in seen:
+            continue
+        seen.add(key)
+        lines.append(text)
+    return "\n".join(lines)[:8000]
+
+
+def normalize_narration_script(script: str, extracted_content: str = "") -> str:
+    raw = str(script or "").replace("\r", "").strip()
+    parsed_script = extract_json_script_candidate(raw)
+    base_text = parsed_script or raw
+
+    lines = []
+    seen = set()
+    for line in base_text.splitlines():
+        cleaned = normalize_line_text(line)
+        if not cleaned:
+            continue
+        key = re.sub(r"[^0-9a-z\u00c0-\u1ef9]+", "", cleaned.lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        lines.append(cleaned)
+
+    normalized = "\n".join(lines).strip()
+    segment_script = build_segment_script(extracted_content)
+
+    suspicious_json_leak = raw.lstrip().startswith("{") and "\"script\"" in raw[:80]
+    has_ui_noise = bool(re.search(r"\bto\s+from[_a-z0-9.]+", raw, flags=re.IGNORECASE))
+    duplicate_heavy = len(lines) >= 2 and len(lines) != len(set(lines))
+    if segment_script and (suspicious_json_leak or has_ui_noise or not normalized or duplicate_heavy):
+        return segment_script[:8000]
+
+    return normalized[:8000]
 
 
 def clean_caption_text(text: str) -> str:
@@ -180,6 +355,45 @@ def parse_extracted_content(value: str | None) -> dict:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def parse_extracted_segments(extracted_content: str | None) -> list[dict]:
+    extracted = parse_extracted_content(extracted_content)
+    segments = extracted.get("segments") or []
+    if not isinstance(segments, list):
+        return []
+
+    parsed_segments = []
+    for index, item in enumerate(segments):
+        if not isinstance(item, dict):
+            continue
+        raw_text = strip_leading_author_label(
+            str(item.get("text") or ""),
+            item.get("author_name", ""),
+            item.get("author_key", ""),
+        )
+        text = clean_script(raw_text)
+        if not text:
+            continue
+        try:
+            image_index = int(item.get("image_index", index))
+        except (TypeError, ValueError):
+            image_index = index
+        parsed_segments.append(
+            {
+                "type": str(item.get("type") or "segment"),
+                "text": text,
+                "image_index": image_index,
+                "author_name": str(item.get("author_name") or ""),
+                "author_key": str(item.get("author_key") or ""),
+            }
+        )
+    return parsed_segments
+
+
+def parse_content_mode(extracted_content: str | None) -> str:
+    extracted = parse_extracted_content(extracted_content)
+    return str(extracted.get("content_mode") or extracted.get("capture_mode") or "general").strip().lower() or "general"
 
 
 def build_caption(script: str = "", extracted_content: str = "") -> str:
@@ -252,6 +466,167 @@ def parse_script_sections(script: str) -> list[str]:
     return sections
 
 
+def split_script_for_extracted_segments(script: str, extracted_segments: list[dict]) -> list[str]:
+    if not extracted_segments:
+        return parse_script_sections(script)
+
+    target_count = len(extracted_segments)
+    sentences = [
+        clean_script(chunk)
+        for chunk in re.split(r"(?<=[.!?])\s+", clean_script(script))
+        if clean_script(chunk)
+    ]
+    if not sentences:
+        return parse_script_sections(script)
+    if len(sentences) <= target_count:
+        chunks = sentences[:]
+        while len(chunks) < target_count:
+            chunks.append("")
+        return chunks[:target_count]
+
+    weights = [max(1, len(clean_script(str(item.get("text") or "")))) for item in extracted_segments]
+    total_weight = sum(weights) or target_count
+    total_chars = sum(len(sentence) for sentence in sentences)
+    target_chars = [max(80, total_chars * weight / total_weight) for weight in weights]
+
+    chunks: list[str] = []
+    current_sentences: list[str] = []
+    current_len = 0
+    segment_index = 0
+    for sentence in sentences:
+        remaining_sentences = len(sentences) - sum(len(chunk.split(". ")) for chunk in chunks) - len(current_sentences)
+        remaining_slots = target_count - segment_index
+        should_close = (
+            current_sentences
+            and current_len >= target_chars[min(segment_index, len(target_chars) - 1)]
+            and remaining_slots > 1
+            and remaining_sentences >= remaining_slots
+        )
+        if should_close:
+            chunks.append(clean_script(" ".join(current_sentences)))
+            current_sentences = []
+            current_len = 0
+            segment_index += 1
+        current_sentences.append(sentence)
+        current_len += len(sentence)
+
+    if current_sentences:
+        chunks.append(clean_script(" ".join(current_sentences)))
+    while len(chunks) < target_count:
+        chunks.append("")
+    return chunks[:target_count]
+
+
+def select_overlay_text_blocks(
+    images: list[Path],
+    script: str,
+    extracted_content: str = "",
+) -> list[str]:
+    segments = parse_extracted_segments(extracted_content)
+    if segments:
+        segment_text_by_image = {int(item["image_index"]): str(item["text"]) for item in segments}
+        blocks = []
+        for image_index in range(len(images)):
+            text = clean_script(segment_text_by_image.get(image_index, ""))
+            if text:
+                blocks.append(text)
+        if blocks:
+            while len(blocks) < len(images):
+                blocks.append(blocks[-1])
+            return blocks[: len(images)]
+
+    text_blocks = parse_script_sections(script)
+    if not text_blocks:
+        return ["..."] * len(images)
+    while len(text_blocks) < len(images):
+        text_blocks.append(text_blocks[-1])
+    return text_blocks[: len(images)]
+
+
+def select_audio_segments(script: str, extracted_content: str = "") -> list[dict]:
+    script_sections = parse_script_sections(script)
+    extracted_segments = parse_extracted_segments(extracted_content)
+    content_mode = parse_content_mode(extracted_content)
+    segment_source = str(os.getenv("AUDIO_SEGMENT_SOURCE", "extracted")).strip().lower()
+
+    if extracted_segments and (segment_source == "extracted" or content_mode == "story"):
+        return remove_embedded_later_segments(extracted_segments)
+
+    if not script_sections:
+        return []
+
+    if extracted_segments:
+        if len(script_sections) < len(extracted_segments):
+            script_sections = split_script_for_extracted_segments(script, extracted_segments)
+        paired_segments = []
+        for index, text in enumerate(script_sections):
+            matched_segment = extracted_segments[index] if index < len(extracted_segments) else extracted_segments[-1]
+            if not text:
+                text = matched_segment.get("text", "")
+            paired_segments.append(
+                {
+                    "type": matched_segment["type"],
+                    "text": text,
+                    "image_index": matched_segment.get("image_index", index),
+                    "author_name": matched_segment.get("author_name", ""),
+                    "author_key": matched_segment.get("author_key", ""),
+                }
+            )
+        return remove_embedded_later_segments(paired_segments)
+
+    return [{"type": "segment", "text": text} for text in script_sections]
+
+
+def overlap_key(text: str) -> str:
+    return re.sub(r"[^0-9a-z\u00c0-\u1ef9]+", "", clean_script(text).lower())
+
+
+def remove_text_fragment(text: str, fragment: str) -> str:
+    text = clean_script(text)
+    fragment = clean_script(fragment)
+    if not text or not fragment:
+        return text
+
+    escaped_fragment = re.escape(fragment)
+    cleaned = re.sub(escaped_fragment, " ", text, count=1, flags=re.IGNORECASE)
+    if cleaned != text:
+        return clean_script(cleaned)
+
+    fragment_sentences = [
+        clean_script(sentence)
+        for sentence in re.split(r"(?<=[.!?])\s+", fragment)
+        if len(clean_script(sentence)) >= 12
+    ]
+    for sentence in sorted(fragment_sentences, key=len, reverse=True):
+        cleaned = re.sub(re.escape(sentence), " ", cleaned, count=1, flags=re.IGNORECASE)
+
+    return clean_script(cleaned)
+
+
+def remove_embedded_later_segments(segments: list[dict]) -> list[dict]:
+    cleaned_segments = [dict(item) for item in segments]
+    later_items = [
+        (index, overlap_key(str(item.get("text") or "")), str(item.get("text") or ""))
+        for index, item in enumerate(cleaned_segments)
+        if len(overlap_key(str(item.get("text") or ""))) >= 24
+    ]
+
+    for later_index, later_key, later_text in later_items:
+        later_type = str(cleaned_segments[later_index].get("type") or "").lower()
+        for earlier_index in range(later_index):
+            earlier = cleaned_segments[earlier_index]
+            earlier_type = str(earlier.get("type") or "").lower()
+            if later_type == "comment" and earlier_type == "comment":
+                continue
+            earlier_key = overlap_key(str(earlier.get("text") or ""))
+            if later_key and later_key in earlier_key:
+                trimmed = remove_text_fragment(str(earlier.get("text") or ""), later_text)
+                if trimmed and overlap_key(trimmed) != earlier_key:
+                    earlier["text"] = trimmed
+
+    return [item for item in cleaned_segments if clean_script(str(item.get("text") or ""))]
+
+
 def dated_output_dir(base_dir: Path, post_id: str) -> Path:
     run_date = datetime.now().strftime("%Y-%m-%d")
     path = base_dir / run_date / safe_filename(post_id)
@@ -277,7 +652,9 @@ def create_silent_audio(path: Path, duration: float, sample_rate: int = 44100) -
 def generate_fpt_tts(text: str, output_path: Path, api_key: str, voice: str, speed: str) -> None:
     if not api_key:
         raise RuntimeError("FPT_TTS_API_KEY is missing")
-    text = text[:5000]
+    text = clean_script(text)[:5000]
+    if not text:
+        raise RuntimeError("No text available for FPT TTS")
     response = requests.post(
         FPT_TTS_URL,
         headers={
@@ -300,8 +677,8 @@ def generate_fpt_tts(text: str, output_path: Path, api_key: str, voice: str, spe
         raise RuntimeError(f"FPT TTS response missing async URL: {payload}")
 
     last_error = None
-    for _ in range(18):
-        time.sleep(4)
+    for _ in range(30):
+        time.sleep(3)
         audio_response = requests.get(audio_url, timeout=30)
         content_type = audio_response.headers.get("content-type", "").lower()
         if audio_response.status_code == 200 and audio_response.content and ("audio" in content_type or len(audio_response.content) > 1024):
@@ -310,6 +687,26 @@ def generate_fpt_tts(text: str, output_path: Path, api_key: str, voice: str, spe
         last_error = f"status={audio_response.status_code} content_type={content_type} bytes={len(audio_response.content)}"
 
     raise RuntimeError(f"FPT TTS audio not ready after polling. Last response: {last_error}")
+
+
+def generate_fpt_tts_stable(text: str, output_path: Path, api_key: str, voice: str, speed: str) -> Path:
+    chunks = split_tts_chunks(text, max_chars=700)
+    if not chunks:
+        raise RuntimeError("No text available for FPT TTS")
+
+    if len(chunks) == 1:
+        generate_fpt_tts(chunks[0], output_path, api_key, voice, speed)
+        return output_path
+
+    chunk_dir = output_path.parent / f"{output_path.stem}_fpt_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_paths = []
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_path = chunk_dir / f"{output_path.stem}_{index:02d}.mp3"
+        generate_fpt_tts(chunk, chunk_path, api_key, voice, speed)
+        chunk_paths.append(chunk_path)
+
+    return concat_audio_files(chunk_paths, output_path)
 
 
 def generate_windows_sapi(text: str, output_path: Path) -> None:
@@ -359,29 +756,109 @@ $speaker.Dispose()
         raise RuntimeError("Windows SAPI did not create an audio file.")
 
 
-async def generate_edge_tts(text: str, output_path: Path, voice: str) -> None:
+async def generate_edge_tts(text: str, output_path: Path, voice: str, rate: str = DEFAULT_EDGE_TTS_RATE) -> None:
     if edge_tts is None:
         raise RuntimeError("edge-tts is not installed")
-    await edge_tts.Communicate(text=text, voice=voice).save(str(output_path))
+    await edge_tts.Communicate(text=text, voice=voice, rate=rate).save(str(output_path))
+
+
+def split_tts_chunks(text: str, max_chars: int = 850) -> list[str]:
+    text = clean_script(text)
+    if len(text) <= max_chars:
+        return [text] if text else []
+
+    chunks: list[str] = []
+    current = ""
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", text) if item.strip()]
+    for sentence in sentences:
+        if len(sentence) > max_chars:
+            words = sentence.split()
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if len(candidate) > max_chars and current:
+                    chunks.append(current)
+                    current = word
+                else:
+                    current = candidate
+            continue
+
+        candidate = f"{current} {sentence}".strip()
+        if len(candidate) > max_chars and current:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def generate_edge_tts_stable(text: str, output_path: Path, voice: str) -> Path:
+    chunks = split_tts_chunks(text)
+    if not chunks:
+        raise RuntimeError("No text available for edge-tts")
+
+    if len(chunks) == 1:
+        try:
+            asyncio.run(generate_edge_tts(chunks[0], output_path, voice, DEFAULT_EDGE_TTS_RATE))
+            return output_path
+        except Exception:
+            asyncio.run(generate_edge_tts(chunks[0], output_path, voice, "+0%"))
+            return output_path
+
+    chunk_dir = output_path.parent / f"{output_path.stem}_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_paths = []
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_path = chunk_dir / f"{output_path.stem}_{index:02d}.mp3"
+        try:
+            asyncio.run(generate_edge_tts(chunk, chunk_path, voice, DEFAULT_EDGE_TTS_RATE))
+        except Exception:
+            asyncio.run(generate_edge_tts(chunk, chunk_path, voice, "+0%"))
+        chunk_paths.append(chunk_path)
+
+    return concat_audio_files(chunk_paths, output_path)
+
+
+def generate_gtts_stable(text: str, output_path: Path) -> Path:
+    chunks = split_tts_chunks(text, max_chars=900)
+    if not chunks:
+        raise RuntimeError("No text available for gTTS")
+
+    if len(chunks) == 1:
+        gTTS(text=chunks[0], lang="vi").save(str(output_path))
+        return output_path
+
+    chunk_dir = output_path.parent / f"{output_path.stem}_gtts_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_paths = []
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_path = chunk_dir / f"{output_path.stem}_{index:02d}.mp3"
+        gTTS(text=chunk, lang="vi").save(str(chunk_path))
+        chunk_paths.append(chunk_path)
+
+    return concat_audio_files(chunk_paths, output_path)
 
 
 def generate_audio(text: str, output_path: Path, fallback_duration: float, voice: str, fpt_api_key: str, fpt_voice: str, fpt_speed: str) -> tuple[Path, str]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    try:
-        generate_fpt_tts(text, output_path, fpt_api_key, fpt_voice, fpt_speed)
-        return output_path, f"tts=fpt voice={fpt_voice}"
-    except Exception as exc:
-        log(f"FPT TTS failed, trying edge-tts: {exc}")
+    if fpt_api_key:
+        try:
+            generate_fpt_tts_stable(text, output_path, fpt_api_key, fpt_voice, fpt_speed)
+            return output_path, f"tts=fpt voice={fpt_voice} speed={fpt_speed}"
+        except Exception as exc:
+            log(f"FPT TTS failed, trying edge-tts: {exc}")
 
     try:
-        asyncio.run(generate_edge_tts(text, output_path, voice))
+        generate_edge_tts_stable(text, output_path, voice)
         return output_path, f"tts=edge-tts voice={voice}"
     except Exception as exc:
         log(f"edge-tts failed, trying gTTS: {exc}")
 
     try:
-        gTTS(text=text, lang="vi").save(str(output_path))
+        generate_gtts_stable(text, output_path)
         return output_path, "tts=gTTS"
     except Exception as exc:
         log(f"gTTS failed, trying Windows SAPI: {exc}")
@@ -396,6 +873,460 @@ def generate_audio(text: str, output_path: Path, fallback_duration: float, voice
     silent_path = output_path.with_suffix(".wav")
     create_silent_audio(silent_path, fallback_duration)
     return silent_path, "tts=silent-fallback"
+
+
+def generate_segment_audio(
+    text: str,
+    output_path: Path,
+    fallback_duration: float,
+    voice: str,
+    fpt_api_key: str,
+    fpt_voice: str,
+    fpt_speed: str,
+    tts_engine: str,
+) -> tuple[Path, str]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tts_engine = str(tts_engine or "auto").strip().lower()
+
+    if tts_engine == "fpt":
+        if not fpt_api_key:
+            raise RuntimeError("FPT TTS selected but FPT_TTS_API_KEY is missing")
+        try:
+            generate_fpt_tts_stable(text, output_path, fpt_api_key, fpt_voice, fpt_speed)
+            return output_path, f"tts=fpt voice={fpt_voice} speed={fpt_speed}"
+        except Exception as exc:
+            raise RuntimeError(f"FPT TTS failed for fixed segment voice {fpt_voice}: {exc}") from exc
+
+    if tts_engine == "edge":
+        try:
+            generate_edge_tts_stable(text, output_path, voice)
+            return output_path, f"tts=edge-tts voice={voice} rate={DEFAULT_EDGE_TTS_RATE}"
+        except Exception as exc:
+            raise RuntimeError(f"edge-tts failed for fixed segment voice {voice}: {exc}") from exc
+
+    if tts_engine == "gtts":
+        try:
+            generate_gtts_stable(text, output_path)
+            return output_path, "tts=gTTS voice=vi"
+        except Exception as exc:
+            raise RuntimeError(f"gTTS failed for fixed segment voice vi: {exc}") from exc
+
+    return generate_audio(text, output_path, fallback_duration, voice, fpt_api_key, fpt_voice, fpt_speed)
+
+
+def concat_audio_files(paths: list[Path], output_path: Path) -> Path:
+    if not paths:
+        raise RuntimeError("No audio segment files to concatenate.")
+    if len(paths) == 1:
+        source_path = paths[0]
+        if source_path.resolve() != output_path.resolve():
+            output_path.write_bytes(source_path.read_bytes())
+        return output_path
+
+    filter_parts = []
+    concat_inputs = []
+    for index in range(len(paths)):
+        label = f"a{index}"
+        filter_parts.append(
+            f"[{index}:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,asetpts=N/SR/TB[{label}]"
+        )
+        concat_inputs.append(f"[{label}]")
+    filter_parts.append(f"{''.join(concat_inputs)}concat=n={len(paths)}:v=0:a=1[outa]")
+
+    command = [
+        ffmpeg_executable(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+    ]
+    for path in paths:
+        command.extend(["-i", str(path)])
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            "[outa]",
+            "-vn",
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "libmp3lame",
+            str(output_path),
+        ]
+    )
+    result = subprocess.run(command, capture_output=True, text=True, timeout=240)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "ffmpeg audio concat failed").strip())
+    return output_path
+
+
+def normalize_audio_segment(source_path: Path, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_filter = (
+        "aresample=44100,"
+        "aformat=sample_fmts=s16:channel_layouts=mono"
+    )
+    if AUDIO_TRIM_SEGMENT_SILENCE:
+        audio_filter += (
+            ",silenceremove="
+            f"start_periods=1:start_duration={AUDIO_LEADING_SILENCE_SECONDS}:start_threshold={AUDIO_SILENCE_THRESHOLD_DB}:"
+            f"stop_periods=1:stop_duration={AUDIO_TRAILING_SILENCE_SECONDS}:stop_threshold={AUDIO_SILENCE_THRESHOLD_DB}"
+        )
+    command = [
+        ffmpeg_executable(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-vn",
+        "-af",
+        audio_filter,
+        "-c:a",
+        "pcm_s16le",
+        str(output_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "ffmpeg audio normalize failed").strip())
+    return output_path
+
+
+def normalize_timed_audio_segments(timed_segments: list[dict], temp_dir: Path) -> list[dict]:
+    normalized_dir = temp_dir / "normalized_wav"
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+    normalized_segments = []
+
+    for index, item in enumerate(timed_segments, start=1):
+        source_path = Path(item["audio_path"])
+        wav_path = normalized_dir / f"segment_{index:02d}.wav"
+        normalize_audio_segment(source_path, wav_path)
+        duration = round(probe_duration(wav_path), 3)
+        payload = dict(item)
+        payload["audio_path"] = wav_path
+        payload["duration"] = duration
+        normalized_segments.append(payload)
+
+    return normalized_segments
+
+
+def concat_normalized_audio_files(paths: list[Path], output_path: Path, overlap_seconds: float = 0.0) -> Path:
+    if not paths:
+        raise RuntimeError("No normalized audio segment files to concatenate.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if len(paths) == 1:
+        source_path = paths[0]
+        if source_path.resolve() != output_path.resolve():
+            output_path.write_bytes(source_path.read_bytes())
+        return output_path
+
+    filter_parts = []
+    concat_inputs = []
+    for index in range(len(paths)):
+        label = f"a{index}"
+        filter_parts.append(
+            f"[{index}:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,asetpts=N/SR/TB[{label}]"
+        )
+        concat_inputs.append(f"[{label}]")
+
+    overlap_seconds = round(max(0.0, min(float(overlap_seconds or 0.0), 0.35)), 3)
+    if overlap_seconds > 0:
+        current_label = "a0"
+        for index in range(1, len(paths)):
+            output_label = "outa" if index == len(paths) - 1 else f"xf{index}"
+            filter_parts.append(
+                f"[{current_label}][a{index}]acrossfade=d={overlap_seconds}:c1=tri:c2=tri[{output_label}]"
+            )
+            current_label = output_label
+    else:
+        filter_parts.append(f"{''.join(concat_inputs)}concat=n={len(paths)}:v=0:a=1[outa]")
+
+    command = [
+        ffmpeg_executable(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+    ]
+    for path in paths:
+        command.extend(["-i", str(path)])
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filter_parts),
+            "-map",
+            "[outa]",
+            "-vn",
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+    )
+    result = subprocess.run(command, capture_output=True, text=True, timeout=240)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "ffmpeg normalized audio concat failed").strip())
+    return output_path
+
+
+def build_timing_manifest_from_segments(timed_segments: list[dict], audio_duration: float, overlap_seconds: float = 0.0) -> list[dict]:
+    cursor = 0.0
+    manifest = []
+    overlap_seconds = round(max(0.0, min(float(overlap_seconds or 0.0), 0.35)), 3)
+
+    for index, item in enumerate(timed_segments):
+        duration = max(0.0, float(item.get("duration", 0.0) or 0.0))
+        start = round(cursor, 3)
+        end = round(cursor + duration, 3)
+        if index == len(timed_segments) - 1:
+            end = round(max(start, audio_duration), 3)
+        manifest.append(
+            {
+                "image_index": item["image_index"],
+                "start": start,
+                "end": end,
+                "type": item.get("type", "segment"),
+            }
+        )
+        cursor = max(start, end - overlap_seconds)
+
+    return manifest
+
+
+def write_audio_timing_debug(path: Path, timed_segments: list[dict], timing_manifest: list[dict], audio_duration: float) -> None:
+    debug_items = []
+    for index, item in enumerate(timed_segments):
+        timing = timing_manifest[index] if index < len(timing_manifest) else {}
+        debug_items.append(
+            {
+                "segment_index": index + 1,
+                "image_index": item.get("image_index", index),
+                "type": item.get("type", "segment"),
+                "duration": round(float(item.get("duration", 0.0) or 0.0), 3),
+                "start": timing.get("start"),
+                "end": timing.get("end"),
+                "text": str(item.get("text") or "")[:1000],
+            }
+        )
+
+    payload = {
+        "audio_duration": round(float(audio_duration), 3),
+        "segments": debug_items,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def concat_audio_files_legacy(paths: list[Path], output_path: Path) -> Path:
+    if not paths:
+        raise RuntimeError("No audio segment files to concatenate.")
+
+    list_path = output_path.with_suffix(".concat.txt")
+    lines = []
+    for path in paths:
+        safe_path = str(path).replace("\\", "/").replace("'", "")
+        lines.append(f"file '{safe_path}'")
+    list_path.write_text("\n".join(lines), encoding="utf-8")
+
+    command = [
+        ffmpeg_executable(),
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+        "-vn",
+        "-ar",
+        "44100",
+        "-ac",
+        "1",
+        "-c:a",
+        "libmp3lame",
+        str(output_path),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=720)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "ffmpeg audio concat failed").strip())
+    return output_path
+
+
+def generate_multi_voice_audio(
+    segments: list[dict],
+    output_path: Path,
+    default_voice: str,
+    discussion_voices: list[str],
+) -> tuple[Path, str]:
+    if edge_tts is None:
+        raise RuntimeError("edge-tts is not installed")
+    if not segments:
+        raise RuntimeError("No script segments available for multi-voice generation.")
+
+    temp_dir = output_path.parent / "_segments"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    comment_voice_index = 0
+    segment_files: list[Path] = []
+
+    for index, item in enumerate(segments, start=1):
+        text = clean_script(str(item.get("text") or ""))
+        if not text:
+            continue
+        segment_type = str(item.get("type") or "segment").lower()
+        voice = default_voice
+        if segment_type == "comment" and discussion_voices:
+            voice = discussion_voices[comment_voice_index % len(discussion_voices)]
+            comment_voice_index += 1
+        segment_path = temp_dir / f"segment_{index:02d}.mp3"
+        asyncio.run(generate_edge_tts(text, segment_path, voice))
+        segment_files.append(segment_path)
+
+    if not segment_files:
+        raise RuntimeError("Multi-voice generation produced no audio segments.")
+
+    return concat_audio_files(segment_files, output_path), f"tts=edge-tts multi-voice voices={','.join(discussion_voices or [default_voice])}"
+
+
+def select_segment_voice(
+    segment: dict,
+    default_voice: str,
+    discussion_voices: list[str],
+    author_voices: list[str],
+    author_voice_map: dict[str, str],
+) -> str:
+    segment_type = str(segment.get("type") or "").strip().lower()
+    if segment_type in {"post", "continuation"}:
+        return default_voice
+
+    if author_voices:
+        author_key = str(segment.get("author_key") or "").strip().lower()
+        if author_key:
+            if author_key not in author_voice_map:
+                author_voice_map[author_key] = author_voices[len(author_voice_map) % len(author_voices)]
+            return author_voice_map[author_key]
+
+    if discussion_voices:
+        author_key = str(segment.get("author_key") or "").strip().lower()
+        if author_key:
+            if author_key not in author_voice_map:
+                author_voice_map[author_key] = discussion_voices[len(author_voice_map) % len(discussion_voices)]
+            return author_voice_map[author_key]
+
+    return default_voice
+
+
+def generate_segments_with_timing(
+    segments: list[dict],
+    temp_dir: Path,
+    voice: str,
+    fpt_api_key: str,
+    fpt_voice: str,
+    fpt_speed: str,
+    discussion_voices: list[str],
+    author_voices: list[str],
+    tts_engine: str = "auto",
+) -> tuple[list[dict], list[str]]:
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict] = []
+    notes: list[str] = []
+    author_voice_map: dict[str, str] = {}
+
+    for index, item in enumerate(segments, start=1):
+        text = clean_script(str(item.get("text") or ""))
+        if not text:
+            continue
+
+        segment_type = str(item.get("type") or "segment").lower()
+        image_index = item.get("image_index", index - 1)
+        segment_voice = select_segment_voice(
+            item,
+            voice,
+            discussion_voices,
+            author_voices,
+            author_voice_map,
+        )
+
+        segment_path = temp_dir / f"segment_{index:02d}.mp3"
+        fallback_duration = max(2.0, len(text) / 12)
+        audio_path, audio_note = generate_segment_audio(
+            text,
+            segment_path,
+            fallback_duration,
+            segment_voice,
+            fpt_api_key,
+            fpt_voice,
+            fpt_speed,
+            tts_engine=tts_engine,
+        )
+
+        try:
+            real_duration = probe_duration(audio_path)
+        except Exception:
+            real_duration = fallback_duration
+
+        results.append(
+            {
+                "type": segment_type,
+                "text": text,
+                "audio_path": audio_path,
+                "duration": round(real_duration, 3),
+                "image_index": int(image_index) if str(image_index).strip() else index - 1,
+                "author_key": item.get("author_key", ""),
+                "voice": segment_voice,
+            }
+        )
+        notes.append(audio_note)
+
+    return results, notes
+
+
+def add_absolute_timing(
+    timed_segments: list[dict],
+    gap_seconds: float = 0.0,
+    intro_seconds: float = 0.0,
+) -> list[dict]:
+    cursor = intro_seconds
+    results: list[dict] = []
+
+    for item in timed_segments:
+        duration = max(0.8, float(item.get("duration", 0.0) or 0.0))
+        start = round(cursor, 3)
+        end = round(cursor + duration, 3)
+        payload = dict(item)
+        payload["start_abs"] = start
+        payload["end_abs"] = end
+        results.append(payload)
+        cursor = end + gap_seconds
+
+    return results
+
+
+def align_timing_to_available_images(timing_data: list[dict], image_count: int) -> list[dict]:
+    if image_count <= 0 or not timing_data:
+        return []
+
+    aligned = []
+    for index, item in enumerate(timing_data):
+        payload = dict(item)
+        try:
+            image_index = int(item.get("image_index", index))
+        except (TypeError, ValueError):
+            image_index = index
+        payload["image_index"] = min(max(0, image_index), image_count - 1)
+        aligned.append(payload)
+
+    return aligned
 
 
 def compute_timeline_durations(text_blocks: list[str], total_duration: float, gap_seconds: float = 0.35, intro_seconds: float = 0.35, outro_seconds: float = 0.35) -> list[tuple[float, float]]:
@@ -474,7 +1405,7 @@ def build_overlay_plan(paths: list[Path], text_blocks: list[str], duration: floa
     if not paths:
         return []
 
-    sequence = paths[:6]
+    sequence = paths[:MAX_OVERLAY_IMAGES]
     text_blocks = (text_blocks or [])[: len(sequence)]
     if len(text_blocks) < len(sequence):
         text_blocks.extend(["..."] * (len(sequence) - len(text_blocks)))
@@ -496,18 +1427,102 @@ def build_overlay_plan(paths: list[Path], text_blocks: list[str], duration: floa
     return plan
 
 
+def build_overlay_plan_from_timing(paths: list[Path], timing_data: list[dict], duration: float) -> list[dict]:
+    if not paths or not timing_data:
+        return []
+
+    sequence = paths[:MAX_OVERLAY_IMAGES]
+    timing_data = align_timing_to_available_images(timing_data, len(sequence))
+    max_timing_end = 0.0
+    for item in timing_data:
+        try:
+            max_timing_end = max(max_timing_end, float(item.get("end", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            continue
+    timing_scale = (duration / max_timing_end) if max_timing_end > duration > 0 else 1.0
+    plan = []
+    used_image_indexes: set[int] = set()
+
+    for timing_index, item in enumerate(timing_data):
+        try:
+            image_index = int(item.get("image_index", 0))
+        except (TypeError, ValueError):
+            image_index = timing_index
+        if timing_index < len(sequence) and (image_index < 0 or image_index >= len(sequence)):
+            image_index = timing_index
+        if image_index < 0 or image_index >= len(sequence):
+            continue
+        used_image_indexes.add(image_index)
+
+        start_raw = float(item.get("start", 0.0) or 0.0) * timing_scale
+        start = round(max(0.0, start_raw - VISUAL_TIMING_LEAD_SECONDS), 3)
+        end_raw = float(item.get("end", start + 1.0) or (start + 1.0)) * timing_scale
+        end = round(min(duration, end_raw), 3)
+        if end <= start:
+            end = round(min(duration, start + 1.0), 3)
+
+        plan.append(
+            {
+                "path": sequence[image_index],
+                "start": start,
+                "end": end,
+                "width": TARGET_SIZE[0],
+            }
+        )
+
+    if len(plan) < min(len(sequence), len(timing_data)):
+        missing_image_indexes = [index for index in range(len(sequence)) if index not in used_image_indexes]
+        missing_cursor = 0
+        existing_keys = {(round(float(item["start"]), 3), round(float(item["end"]), 3)) for item in plan}
+        for item in timing_data:
+            if missing_cursor >= len(missing_image_indexes):
+                break
+            try:
+                image_index = int(item.get("image_index", 0))
+            except (TypeError, ValueError):
+                image_index = -1
+            if 0 <= image_index < len(sequence):
+                continue
+            start = round(max(0.0, float(item.get("start", 0.0) or 0.0) * timing_scale), 3)
+            end = round(min(duration, float(item.get("end", start + 1.0) or (start + 1.0)) * timing_scale), 3)
+            key = (start, end)
+            if key in existing_keys:
+                continue
+            fallback_index = missing_image_indexes[missing_cursor]
+            missing_cursor += 1
+            plan.append(
+                {
+                    "path": sequence[fallback_index],
+                    "start": start,
+                    "end": max(start + 0.2, end),
+                    "width": TARGET_SIZE[0],
+                }
+            )
+            existing_keys.add(key)
+
+    plan.sort(key=lambda item: (float(item["start"]), float(item["end"])))
+    for index, item in enumerate(plan):
+        next_start = float(plan[index + 1]["start"]) if index + 1 < len(plan) else duration
+        item["end"] = round(min(max(float(item["start"]) + 0.2, float(item["end"])), next_start), 3)
+    if plan:
+        last_audio_end = float(plan[-1]["end"])
+        plan[-1]["end"] = round(min(last_audio_end, duration), 3)
+    return plan
+
+
 def escape_filter_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
-def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list[dict], duration: float, fps: int = 20) -> None:
+def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list[dict], duration: float, fps: int = 30) -> None:
     ffmpeg = ffmpeg_executable()
     target_w, target_h = TARGET_SIZE
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
 
     if background_path.exists():
         command.extend(["-stream_loop", "-1", "-i", str(background_path)])
-        bg_label = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,trim=duration={duration},setpts=PTS-STARTPTS[base]".format(
+        bg_label = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920,fps={fps},trim=duration={duration},setpts=PTS-STARTPTS[base]".format(
+            fps=fps,
             duration=duration
         )
         next_input_index = 1
@@ -531,7 +1546,7 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
         start = float(item["start"])
         end = float(item["end"])
         filter_parts.append(
-            f"[{input_label}]scale={width}:-2[{overlay_label}]"
+            f"[{input_label}]fps={fps},trim=duration={duration},setpts=PTS-STARTPTS,scale={width}:-2:flags=lanczos[{overlay_label}]"
         )
         filter_parts.append(
             f"[{current_label}][{overlay_label}]overlay=(W-w)/2:{overlay_y_expr}:enable='between(t,{start},{end})'[{output_label}]"
@@ -550,13 +1565,21 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
             str(duration),
             "-r",
             str(fps),
+            "-fps_mode",
+            "cfr",
             "-an",
             "-pix_fmt",
             "yuv420p",
             "-c:v",
             "libx264",
+            "-crf",
+            "18",
             "-preset",
-            "ultrafast",
+            "veryfast",
+            "-profile:v",
+            "high",
+            "-level",
+            "4.1",
             "-movflags",
             "+faststart",
             str(output_path),
@@ -568,8 +1591,20 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
         raise RuntimeError((result.stderr or result.stdout or "ffmpeg visual build failed").strip())
 
 
-def write_voice(post_id: str, script: str, audio_dir: Path, temp_dir: Path, voice: str, fpt_api_key: str, fpt_voice: str, fpt_speed: str) -> dict:
-    script = clean_script(script)
+def write_voice(
+    post_id: str,
+    script: str,
+    extracted_content: str,
+    audio_dir: Path,
+    temp_dir: Path,
+    voice: str,
+    fpt_api_key: str,
+    fpt_voice: str,
+    fpt_speed: str,
+    discussion_voices: list[str],
+    author_voices: list[str],
+) -> dict:
+    script = normalize_narration_script(script, extracted_content)
     if not script:
         raise RuntimeError("Narrator_Script is empty.")
 
@@ -577,40 +1612,147 @@ def write_voice(post_id: str, script: str, audio_dir: Path, temp_dir: Path, voic
     temp_post_dir = temp_dir / safe_filename(post_id)
     temp_post_dir.mkdir(parents=True, exist_ok=True)
     fallback_duration = estimate_duration(script, 1)
-    audio_path, audio_note = generate_audio(script, output_dir / "narration.mp3", fallback_duration, voice, fpt_api_key, fpt_voice, fpt_speed)
+    content_mode = parse_content_mode(extracted_content)
+    audio_segments = select_audio_segments(script, extracted_content)
+
+    if audio_segments:
+        effective_discussion_voices = discussion_voices if content_mode == "discussion" else []
+        voice_engines = ["edge"] if (effective_discussion_voices or author_voices) else []
+        if not voice_engines:
+            if fpt_api_key:
+                voice_engines.append("fpt")
+            voice_engines.append("edge")
+            if str(os.getenv("TTS_ALLOW_GTTS_FALLBACK", "")).strip().lower() in {"1", "true", "yes"}:
+                voice_engines.append("gtts")
+
+        last_error = None
+        timed_segments, segment_notes = [], []
+        for engine in voice_engines:
+            try:
+                timed_segments, segment_notes = generate_segments_with_timing(
+                    audio_segments,
+                    temp_post_dir / f"segments_{engine}",
+                    voice,
+                    fpt_api_key,
+                    fpt_voice,
+                    fpt_speed,
+                    effective_discussion_voices,
+                    author_voices,
+                    tts_engine=engine,
+                )
+                break
+            except RuntimeError as exc:
+                last_error = exc
+                log(f"{engine} batch TTS failed, trying next engine: {exc}")
+
+        if not timed_segments:
+            raise RuntimeError(f"All fixed voice TTS engines failed: {last_error}")
+    else:
+        timed_segments, segment_notes = [], []
+
+    if timed_segments:
+        timed_segments = normalize_timed_audio_segments(timed_segments, temp_post_dir)
+        overlap_seconds = AUDIO_SEGMENT_OVERLAP_SECONDS if len(timed_segments) > 1 else 0.0
+        audio_path = concat_normalized_audio_files(
+            [Path(item["audio_path"]) for item in timed_segments],
+            output_dir / "narration.wav",
+            overlap_seconds=overlap_seconds,
+        )
+        final_audio_duration = round(probe_duration(audio_path), 3)
+        expected_timing_end = round(
+            sum(float(item.get("duration", 0.0) or 0.0) for item in timed_segments)
+            - overlap_seconds * max(0, len(timed_segments) - 1),
+            3,
+        )
+        timing_delta = round(final_audio_duration - expected_timing_end, 3)
+        if overlap_seconds > 0 and abs(timing_delta) > 0.25:
+            log(f"Audio overlap produced unexpected duration delta={timing_delta:.3f}s; falling back to plain concat.")
+            overlap_seconds = 0.0
+            audio_path = concat_normalized_audio_files(
+                [Path(item["audio_path"]) for item in timed_segments],
+                output_dir / "narration.wav",
+                overlap_seconds=0.0,
+            )
+            final_audio_duration = round(probe_duration(audio_path), 3)
+            expected_timing_end = round(sum(float(item.get("duration", 0.0) or 0.0) for item in timed_segments), 3)
+            timing_delta = round(final_audio_duration - expected_timing_end, 3)
+        audio_note = "tts=per-segment " + ", ".join(dict.fromkeys(segment_notes))
+        if overlap_seconds > 0:
+            audio_note = f"{audio_note} overlap={overlap_seconds:.2f}s"
+        timing_manifest = build_timing_manifest_from_segments(timed_segments, final_audio_duration, overlap_seconds=overlap_seconds)
+        write_audio_timing_debug(output_dir / "audio_timing_debug.json", timed_segments, timing_manifest, final_audio_duration)
+        if abs(timing_delta) > 0.05:
+            audio_note = f"{audio_note} timing_delta={timing_delta:.3f}s"
+    else:
+        audio_path, audio_note = generate_audio(
+            script,
+            output_dir / "narration.mp3",
+            fallback_duration,
+            voice,
+            fpt_api_key,
+            fpt_voice,
+            fpt_speed,
+        )
+        duration = round(probe_duration(audio_path), 2)
+        timing_manifest = [{"image_index": 0, "start": 0.0, "end": round(duration, 3), "type": "segment"}]
+
     duration = round(probe_duration(audio_path), 2)
     return {
         "ID": post_id,
         "Audio_Path": str(audio_path),
+        "Audio_Timing": json.dumps(timing_manifest, ensure_ascii=True),
         "Status": "In Progress",
-        "Note": f"Phase 3A: voice ready duration={duration}s {audio_note}",
+        "Note": f"Phase 3A: voice ready duration={duration}s mode={content_mode} segments={len(timing_manifest)} {audio_note}",
     }
 
 
-def build_visual(post_id: str, screenshots: dict, script: str, background_path: Path, visuals_dir: Path, audio_path: Path | None = None) -> dict:
+def build_visual(
+    post_id: str,
+    screenshots: dict,
+    script: str,
+    background_path: Path,
+    visuals_dir: Path,
+    audio_path: Path | None = None,
+    extracted_content: str = "",
+    audio_timing: str = "",
+) -> dict:
     images = screenshot_paths(screenshots)
     if not images:
         raise RuntimeError("No screenshot files found for visual build.")
 
-    text_blocks = parse_script_sections(script)
+    text_blocks = select_overlay_text_blocks(images, script, extracted_content)
+    timing_data: list[dict] = []
+    if audio_timing:
+        try:
+            parsed_timing = json.loads(audio_timing)
+            if isinstance(parsed_timing, list):
+                timing_data = [item for item in parsed_timing if isinstance(item, dict)]
+        except json.JSONDecodeError:
+            timing_data = []
+
     if audio_path and audio_path.exists():
-        duration = min(75.0, max(8.0, probe_duration(audio_path) + 0.8))
+        # Match visual length to the generated narration instead of hard-capping
+        # at short-form defaults, otherwise the final merge trims the audio.
+        audio_duration = probe_duration(audio_path)
+        duration = max(1.0, audio_duration)
     else:
         duration = estimate_duration(clean_script(script), len(images)) + 2.0
-        duration = min(75.0, max(10.0, duration))
+        duration = min(120.0, max(10.0, duration))
 
     output_dir = dated_output_dir(visuals_dir, post_id)
     output_path = output_dir / "visual.mp4"
-    overlay_plan = build_overlay_plan(images, text_blocks, duration)
+    overlay_plan = build_overlay_plan_from_timing(images, timing_data, duration) if timing_data else []
+    if not overlay_plan:
+        overlay_plan = build_overlay_plan(images, text_blocks, duration)
     if not overlay_plan:
         raise RuntimeError("No overlay plan generated for visual build.")
-    build_visual_ffmpeg(background_path, output_path, overlay_plan, duration, fps=20)
+    build_visual_ffmpeg(background_path, output_path, overlay_plan, duration, fps=30)
 
     return {
         "ID": post_id,
         "Visual_Video_Path": str(output_path),
         "Status": "In Progress",
-        "Note": f"Phase 3B: visual ready duration={round(duration, 2)}s images={len(images)} comments={max(0, len(images)-1)}",
+        "Note": f"Phase 3B: visual ready duration={round(duration, 2)}s images={len(images)} overlays={len(overlay_plan)} lead={VISUAL_TIMING_LEAD_SECONDS}s sync={'audio-timing' if timing_data else ('segments' if parse_extracted_segments(extracted_content) else 'script')}",
     }
 
 
@@ -623,9 +1765,12 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
     output_dir = dated_output_dir(videos_dir, post_id)
     output_path = output_dir / "final.mp4"
     audio_duration = probe_duration(audio_path)
-    visual_duration = probe_duration(visual_path)
-    duration = max(1.0, min(audio_duration, visual_duration) - 0.15)
+    duration = max(1.0, audio_duration)
 
+    filter_complex = (
+        "[0:v]setpts=PTS-STARTPTS,fps=30[v];"
+        "[1:a]aresample=44100:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS[a]"
+    )
     command = [
         ffmpeg_executable(),
         "-y",
@@ -636,22 +1781,39 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
         str(visual_path),
         "-i",
         str(audio_path),
+        "-filter_complex",
+        filter_complex,
         "-map",
-        "0:v:0",
+        "[v]",
         "-map",
-        "1:a:0",
+        "[a]",
         "-t",
         str(duration),
+        "-fps_mode",
+        "cfr",
+        "-pix_fmt",
+        "yuv420p",
         "-c:v",
-        "copy",
+        "libx264",
+        "-crf",
+        "18",
+        "-preset",
+        "veryfast",
+        "-profile:v",
+        "high",
+        "-level",
+        "4.1",
         "-c:a",
         "aac",
-        "-shortest",
+        "-ar",
+        "44100",
+        "-ac",
+        "1",
         "-movflags",
         "+faststart",
         str(output_path),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=900)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "ffmpeg merge failed").strip())
 
@@ -672,6 +1834,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--script")
     parser.add_argument("--extracted-content")
     parser.add_argument("--audio-path")
+    parser.add_argument("--audio-timing")
     parser.add_argument("--visual-path")
     parser.add_argument("--background", default=os.getenv("BACKGROUND_VIDEO_PATH", DEFAULT_BACKGROUND))
     parser.add_argument("--audio-dir", default=os.getenv("AUDIO_DIR", DEFAULT_AUDIO_DIR))
@@ -679,32 +1842,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--videos-dir", default=os.getenv("VIDEOS_DIR", DEFAULT_VIDEOS_DIR))
     parser.add_argument("--temp-dir", default=os.getenv("TEMP_DIR", DEFAULT_TEMP_DIR))
     parser.add_argument("--voice", default=os.getenv("TTS_VOICE", DEFAULT_TTS_VOICE))
+    parser.add_argument("--discussion-voices", default=os.getenv("TTS_DISCUSSION_VOICES", ",".join(DEFAULT_DISCUSSION_VOICES)))
+    parser.add_argument("--author-voices", default=os.getenv("TTS_AUTHOR_VOICES", ",".join(DEFAULT_AUTHOR_VOICES)))
     parser.add_argument("--fpt-api-key", default=os.getenv("FPT_TTS_API_KEY", ""))
     parser.add_argument("--fpt-voice", default=os.getenv("FPT_TTS_VOICE", "banmai"))
-    parser.add_argument("--fpt-speed", default=os.getenv("FPT_TTS_SPEED", "0"))
+    parser.add_argument("--fpt-speed", default=os.getenv("FPT_TTS_SPEED", "1"))
     return parser.parse_args()
 
 
 def main() -> int:
-    load_dotenv(PROJECT_ROOT / ".env")
+    load_dotenv(PROJECT_ROOT / ".env", override=True)
     args = parse_args()
     args.id = decode_cli_text(args.id)
     args.screenshots = decode_cli_text(args.screenshots)
     args.script = decode_cli_text(args.script)
     args.extracted_content = decode_cli_text(args.extracted_content)
     args.audio_path = decode_cli_text(args.audio_path)
+    args.audio_timing = decode_cli_text(args.audio_timing)
     args.visual_path = decode_cli_text(args.visual_path)
 
     try:
         if args.mode == "voice":
             if not args.script:
                 raise RuntimeError("--script is required for mode=voice")
+            discussion_voices = [item.strip() for item in str(args.discussion_voices or "").split(",") if item.strip()]
+            author_voices = [item.strip() for item in str(args.author_voices or "").split(",") if item.strip()]
             result = write_voice(
                 post_id=args.id,
                 script=args.script,
+                extracted_content=args.extracted_content or "",
                 audio_dir=resolve_path(args.audio_dir),
                 temp_dir=resolve_path(args.temp_dir),
                 voice=args.voice,
+                discussion_voices=discussion_voices,
+                author_voices=author_voices,
                 fpt_api_key=args.fpt_api_key,
                 fpt_voice=args.fpt_voice,
                 fpt_speed=args.fpt_speed,
@@ -716,9 +1887,11 @@ def main() -> int:
                 post_id=args.id,
                 screenshots=parse_screenshots(args.screenshots),
                 script=args.script or "",
+                extracted_content=args.extracted_content or "",
                 background_path=resolve_path(args.background),
                 visuals_dir=resolve_path(args.visuals_dir),
                 audio_path=resolve_path(args.audio_path) if args.audio_path else None,
+                audio_timing=args.audio_timing or "",
             )
         else:
             if not args.audio_path or not args.visual_path:

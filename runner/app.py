@@ -22,6 +22,7 @@ class Phase2Payload(BaseModel):
 class Phase3VoicePayload(BaseModel):
     id: str
     script: str
+    extracted_content: str = ""
 
 
 class Phase3VisualPayload(BaseModel):
@@ -29,6 +30,8 @@ class Phase3VisualPayload(BaseModel):
     screenshots: str
     script: str = ""
     audio_path: str = ""
+    audio_timing: str = ""
+    extracted_content: str = ""
 
 
 class Phase3MergePayload(BaseModel):
@@ -46,14 +49,25 @@ class Phase4PublishPayload(BaseModel):
 
 
 def run_python(args: list[str], timeout: int) -> dict:
-    result = subprocess.run(
-        [PYTHON_BIN, *args],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            [PYTHON_BIN, *args],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "message": f"Python command timed out after {timeout}s",
+                "command": [PYTHON_BIN, *args[:8], "..."] if len(args) > 8 else [PYTHON_BIN, *args],
+                "stdout": (exc.stdout or "")[:4000],
+                "stderr": (exc.stderr or "")[:4000],
+            },
+        ) from exc
     stdout = (result.stdout or "").strip()
     stderr = (result.stderr or "").strip()
 
@@ -109,8 +123,18 @@ def phase2_screenshot_extract(payload: Phase2Payload) -> dict:
 @app.post("/phase3/voice")
 def phase3_voice(payload: Phase3VoicePayload) -> dict:
     data = run_python(
-        ["src/video_factory.py", "--mode", "voice", "--id", payload.id, "--script", payload.script],
-        timeout=180,
+        [
+            "src/video_factory.py",
+            "--mode",
+            "voice",
+            "--id",
+            payload.id,
+            "--script",
+            payload.script,
+            "--extracted-content",
+            payload.extracted_content,
+        ],
+        timeout=420,
     )
     if not isinstance(data, dict):
         raise HTTPException(status_code=500, detail={"message": "video_factory.py voice mode must return a JSON object"})
@@ -129,10 +153,14 @@ def phase3_visual(payload: Phase3VisualPayload) -> dict:
         payload.screenshots,
         "--script",
         payload.script,
+        "--extracted-content",
+        payload.extracted_content,
     ]
     if payload.audio_path:
         args.extend(["--audio-path", payload.audio_path])
-    data = run_python(args, timeout=360)
+    if payload.audio_timing:
+        args.extend(["--audio-timing", payload.audio_timing])
+    data = run_python(args, timeout=720)
     if not isinstance(data, dict):
         raise HTTPException(status_code=500, detail={"message": "video_factory.py visual mode must return a JSON object"})
     return data
@@ -156,7 +184,7 @@ def phase3_merge(payload: Phase3MergePayload) -> dict:
             "--extracted-content",
             payload.extracted_content,
         ],
-        timeout=180,
+        timeout=900,
     )
     if not isinstance(data, dict):
         raise HTTPException(status_code=500, detail={"message": "video_factory.py merge mode must return a JSON object"})

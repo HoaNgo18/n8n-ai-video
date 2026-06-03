@@ -71,7 +71,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().filter(item => {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasScreenshots = String(item.json.Screenshots || '').trim();\n  const hasAudio = String(item.json.Audio_Path || '').trim();\n  const hasVisual = String(item.json.Visual_Video_Path || '').trim();\n  return status === 'in progress' && hasScreenshots && hasAudio && !hasVisual;\n});\n\nreturn rows.slice(0, 1);"
+        "jsCode": "const rows = $input.all().filter(item => {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasScreenshots = String(item.json.Screenshots || '').trim();\n  const hasAudio = String(item.json.Audio_Path || '').trim();\n  const hasTiming = String(item.json.Audio_Timing || '').trim();\n  const hasVisual = String(item.json.Visual_Video_Path || '').trim();\n  return status === 'in progress' && hasScreenshots && hasAudio && hasTiming && !hasVisual;\n});\n\nreturn rows.slice(0, 1);"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -101,8 +101,10 @@
         "method": "POST",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { id: $json.ID, script: $json.Narrator_Script } }}",
-        "options": {}
+        "jsonBody": "={{ { id: $json.ID, script: $json.Narrator_Script, extracted_content: $json.Extracted_Content || '' } }}",
+        "options": {
+          "timeout": 900000
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -111,7 +113,10 @@
         720
       ],
       "id": "ef1d6377-1c04-45b7-abf6-20a62ef7f2be",
-      "name": "Run Voice Generator"
+      "name": "Run Voice Generator",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000
     },
     {
       "parameters": {
@@ -119,8 +124,10 @@
         "method": "POST",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { id: $json.ID, screenshots: $json.Screenshots, script: $json.Narrator_Script || '', audio_path: $json.Audio_Path || '' } }}",
-        "options": {}
+        "jsonBody": "={{ { id: $json.ID, screenshots: $json.Screenshots, script: $json.Narrator_Script || '', audio_path: $json.Audio_Path || '', audio_timing: $json.Audio_Timing || '', extracted_content: $json.Extracted_Content || '' } }}",
+        "options": {
+          "timeout": 900000
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -129,7 +136,10 @@
         880
       ],
       "id": "8e690f37-8e85-4da7-9431-c7cf7885ed70",
-      "name": "Run Visual Builder"
+      "name": "Run Visual Builder",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000
     },
     {
       "parameters": {
@@ -138,7 +148,9 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { id: $json.ID, audio_path: $json.Audio_Path, visual_path: $json.Visual_Video_Path, script: $json.Narrator_Script || '', extracted_content: $json.Extracted_Content || '' } }}",
-        "options": {}
+        "options": {
+          "timeout": 1200000
+        }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
@@ -147,7 +159,10 @@
         1200
       ],
       "id": "00ee4ef5-ec4c-4063-bdc8-94794bc63433",
-      "name": "Run Merge Final"
+      "name": "Run Merge Final",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 30000
     },
     {
       "parameters": {
@@ -170,6 +185,7 @@
           "value": {
             "ID": "={{ $json.ID }}",
             "Audio_Path": "={{ $json.Audio_Path }}",
+            "Audio_Timing": "={{ $json.Audio_Timing }}",
             "Status": "={{ $json.Status }}",
             "Note": "={{ $json.Note }}"
           },
@@ -198,6 +214,15 @@
             {
               "id": "Audio_Path",
               "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
               "required": false,
               "defaultMatch": false,
               "display": true,
@@ -481,7 +506,7 @@
             "index": 0
           },
           {
-            "node": "Pick Visual Row",
+            "node": "Read Threads Sheet For Merge",
             "type": "main",
             "index": 0
           }
@@ -579,6 +604,11 @@
     "Read Threads Sheet For Merge": {
       "main": [
         [
+          {
+            "node": "Pick Visual Row",
+            "type": "main",
+            "index": 0
+          },
           {
             "node": "Pick Merge Row",
             "type": "main",

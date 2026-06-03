@@ -379,6 +379,29 @@ def strip_leading_handle_and_time(text: str) -> str:
     )
     text = re.sub(r"^@?[A-Za-z0-9_.]{3,}\s+\d+\s*[mhdsw]\b\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^\d+\s*[mhdsw]\b\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^@?[A-Za-z0-9.]*_[A-Za-z0-9_.-]*\b[\s:.,;-]*", "", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def strip_leading_known_author(text: str, *author_values: object) -> str:
+    text = clean_text(text)
+    candidates = []
+    for value in author_values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        candidates.extend(
+            [
+                raw,
+                raw.lstrip("@"),
+                raw.replace("@", ""),
+                raw.replace("_", " "),
+            ]
+        )
+
+    for candidate in sorted({item for item in candidates if item}, key=len, reverse=True):
+        text = re.sub(rf"^@?{re.escape(candidate)}\b[\s:.,;-]*", " ", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?[\s:.,;-]*", " ", text)
     return clean_text(text)
 
 
@@ -434,6 +457,7 @@ def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
     text = strip_trailing_metrics(text)
     text = strip_threads_context_noise(text)
     text = strip_leading_handle_and_time(text)
+    text = re.sub(r"^\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?[\s:.,;-]*", " ", text)
     text = clean_text(text)
 
     if is_comment:
@@ -641,6 +665,7 @@ def build_content_segments(
     post_author_key = normalize_search_text(post_author)
 
     cleaned_post = cleanup_screen_text(post_text, is_comment=False)
+    cleaned_post = strip_leading_known_author(cleaned_post, post_author, post_author_key)
     if cleaned_post:
         segments.append(
             {
@@ -654,6 +679,11 @@ def build_content_segments(
 
     for item in continuations:
         cleaned = cleanup_screen_text(item.get("text", ""), is_comment=False)
+        cleaned = strip_leading_known_author(
+            cleaned,
+            item.get("author_name", post_author),
+            item.get("author_key", post_author_key),
+        )
         if not cleaned:
             continue
         image_index += 1
@@ -669,6 +699,11 @@ def build_content_segments(
 
     for item in comments:
         cleaned = cleanup_screen_text(item.get("text", ""), is_comment=True)
+        cleaned = strip_leading_known_author(
+            cleaned,
+            item.get("author_name", ""),
+            item.get("author_key", ""),
+        )
         if not cleaned:
             continue
         image_index += 1

@@ -47,6 +47,7 @@ if hasattr(sys.stderr, "reconfigure"):
 DEFAULT_MAX_POSTS = 15
 DEFAULT_SCROLL_COUNT = 8
 DEFAULT_MIN_ENGAGEMENT_SCORE = 200
+DEFAULT_MIN_STRONGEST_METRIC_SCORE = 1000
 DEFAULT_MIN_CONTENT_FIT_SCORE = 2
 
 THREADS_LOGIN_URL = "https://www.threads.net/login"
@@ -63,10 +64,11 @@ SELF_PROMO_KEYWORDS = (
     "dang ky kenh", "kenh youtube", "tiktok cua minh", "facebook cua minh",
 )
 DISCUSSION_KEYWORDS = (
-    "mn nghi sao", "mo nguoi nghi sao", "theo moi nguoi", "theo mn",
+    "mn nghi sao", "mng nghi sao", "moi nguoi nghi sao", "nghi sao",
+    "theo moi nguoi", "theo mn", "theo mng", "moi nguoi oi",
     "co ai thay", "co ai tung", "ban se chon", "neu la ban",
     "goc nhin", "tranh cai", "y kien", "quan diem", "ban luan",
-    "thao luan", "drama", "red flag", "toxic",
+    "thao luan", "muon nghe", "xin y kien", "drama", "red flag", "toxic",
 )
 HOT_TOPIC_KEYWORDS = (
     "gia nha", "bat dong san", "chung cu", "nong len", "mat dien",
@@ -99,6 +101,12 @@ VIET_PATTERN = re.compile(
     "]",
     re.IGNORECASE,
 )
+VIET_SPECIFIC_PATTERN = re.compile(r"[ăđĩũơưạ-ỹ]", re.IGNORECASE)
+VIET_STOPWORDS = {
+    "ban", "biet", "cua", "cung", "duoc", "khong", "minh", "moi",
+    "mot", "nguoi", "nghi", "nhieu", "nhung", "qua", "roi", "sao",
+    "theo", "toi", "trong", "voi",
+}
 
 
 @dataclass(frozen=True)
@@ -114,6 +122,7 @@ class Config:
     debug_dir: Path
     force_login: bool
     min_engagement_score: int
+    min_strongest_metric_score: int
     candidate_limit: int
     min_content_fit_score: int
     dry_run: bool
@@ -163,7 +172,11 @@ async def write_debug_artifacts(page: Page, config: Config, label: str) -> None:
 
 
 def is_vietnamese(text: str) -> bool:
-    return bool(VIET_PATTERN.search(text or ""))
+    if VIET_SPECIFIC_PATTERN.search(text or ""):
+        return True
+    normalized = normalize_search_text(text)
+    tokens = set(re.findall(r"[a-z]{2,}", normalized))
+    return sum(1 for word in VIET_STOPWORDS if word in tokens) >= 4
 
 
 def normalize_search_text(text: str) -> str:
@@ -259,7 +272,7 @@ def canonical_post_url(url: str) -> str:
 
 def parse_number_token(token: str) -> int | None:
     token = token.strip()
-    match = re.fullmatch(r"(\d+(?:[,.]\d+)?)([KkMm]?)", token)
+    match = re.fullmatch(r"(\d+(?:[,.]\d+)?)([KkM]?)", token)
     if not match:
         return None
     raw_number, suffix = match.groups()
@@ -271,8 +284,10 @@ def parse_number_token(token: str) -> int | None:
 
 
 def estimate_engagement(text: str) -> dict:
-    tail = " ".join((text or "").split())[-260:]
-    tokens = re.findall(r"\b\d+(?:[,.]\d+)?[KkMm]?\b", tail)
+    compact_text = " ".join((text or "").split())
+    metric_region = compact_text.rsplit("Translate", 1)[-1] if "Translate" in compact_text else compact_text
+    tail = metric_region[-260:]
+    tokens = re.findall(r"\b\d+(?:[,.]\d+)?[KkM]?\b", tail)
     values, raw_tokens = [], []
     for token in tokens:
         value = parse_number_token(token)
@@ -457,6 +472,18 @@ async def collect_posts(page: Page, config: Config) -> list[dict]:
                                         "content_fit_tags": content_fit["tags"],
                                         "text_preview": text[:240]})
                 continue
+            if engagement["strongest_metric"] < config.min_strongest_metric_score:
+                stats.add(f"engagement:strongest={engagement['strongest_metric']}")
+                if config.dry_run:
+                    diagnostics.append({"id": post_id, "url": url, "accepted": False,
+                                        "stage": "engagement",
+                                        "engagement_score": engagement["score"],
+                                        "engagement_metrics": engagement["metrics"],
+                                        "engagement_strongest_metric": engagement["strongest_metric"],
+                                        "content_fit_score": content_fit["score"],
+                                        "content_fit_tags": content_fit["tags"],
+                                        "text_preview": text[:240]})
+                continue
 
             # ── Accepted ──
             item = {
@@ -547,6 +574,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-posts", type=int, default=int(os.getenv("MAX_POSTS", DEFAULT_MAX_POSTS)))
     parser.add_argument("--min-engagement-score", type=int,
                         default=int(os.getenv("MIN_ENGAGEMENT_SCORE", DEFAULT_MIN_ENGAGEMENT_SCORE)))
+    parser.add_argument("--min-strongest-metric-score", type=int,
+                        default=int(os.getenv("MIN_STRONGEST_METRIC_SCORE", DEFAULT_MIN_STRONGEST_METRIC_SCORE)))
     parser.add_argument("--candidate-limit", type=int,
                         default=int(os.getenv("CANDIDATE_LIMIT", str(DEFAULT_MAX_POSTS * 5))))
     parser.add_argument("--min-content-fit-score", type=int,
@@ -606,6 +635,7 @@ def main() -> int:
         debug_dir=debug_dir,
         force_login=args.force_login,
         min_engagement_score=args.min_engagement_score,
+        min_strongest_metric_score=args.min_strongest_metric_score,
         candidate_limit=max(args.candidate_limit, args.max_posts),
         min_content_fit_score=args.min_content_fit_score,
         dry_run=args.dry_run,
@@ -613,6 +643,7 @@ def main() -> int:
 
     log(f"Config: headless={config.headless} max_posts={config.max_posts} "
         f"scroll={config.scroll_count} min_eng={config.min_engagement_score} "
+        f"min_strongest={config.min_strongest_metric_score} "
         f"min_fit={config.min_content_fit_score} dry_run={config.dry_run}")
 
     try:

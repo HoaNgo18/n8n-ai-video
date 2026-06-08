@@ -1,4 +1,5 @@
 .env
+google-service-account*.json
 venv/
 __pycache__/
 *.py[cod]
@@ -6,7 +7,10 @@ __pycache__/
 runtime/storage/
 runtime/debug/
 runtime/cache/
+runtime/data/
 runtime/data/screenshots/
+runtime/data/audio/
+runtime/data/visuals/
 runtime/data/videos/
 runtime/data/temp/
 runtime/data/exports/

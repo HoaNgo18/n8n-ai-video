@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    load_dotenv(ENV_PATH)
+    load_dotenv(ENV_PATH, override=True)
     args = parse_args()
 
     if args.command == "auth-url":

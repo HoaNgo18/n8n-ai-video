@@ -23,7 +23,7 @@ Phase 3: Video Maker
   -> Status: Draft
 
 Phase 4: Admin Review + Publisher
-  -> Status: Ready To Upload / Rejected / Uploaded
+  -> Status: Draft / Approved / Rejected / Published / Failed
 ```
 
 ## Phase Details
@@ -43,14 +43,16 @@ What it does:
 - Opens Threads feed and collects candidate post URLs.
 - Filters for Vietnamese text.
 - Estimates visible engagement and keeps posts above `MIN_ENGAGEMENT_SCORE`.
-- Sorts qualified posts by estimated engagement before writing to the sheet.
+- Applies a heuristic content-fit filter with `MIN_CONTENT_FIT_SCORE`.
+- Runs a Gemini classifier in the Phase 1 workflow to keep only posts that still look like either `discussion` or `story_hot`.
+- Rejects weak personal-photo/status posts before writing to the sheet.
 - Writes new rows into Google Sheet tab `Threads`.
 - Sets `Status = Pending`.
 
 Known notes:
 
 - Threads Explore currently fails in headless browser, so the miner falls back to the home feed.
-- `Note` stores a raw text preview for now.
+- `Note` now stores engagement, heuristic fit, and AI classifier reason alongside the raw preview.
 - Engagement parsing and ranking are future improvements.
 
 ### Phase 2: Screenshot + Extract
@@ -91,17 +93,20 @@ Current status: split-lane MVP implemented in one workflow.
 
 Planned behavior:
 
-- Lane A reads rows where `Status = In Progress` and `Audio_Path` is empty, then generates narration audio.
-- Lane B reads rows where `Status = In Progress` and `Visual_Video_Path` is empty, then renders the silent visual video.
+- Lane A reads rows where `Status = In Progress` and `Audio_Path` is empty, then generates narration audio plus `Audio_Timing`.
+- Lane B reads rows where `Status = In Progress`, `Audio_Path` exists, and `Audio_Timing` exists, then renders the silent visual video.
 - Lane C reads rows where `Status = In Progress`, `Audio_Path` exists, and `Visual_Video_Path` exists, then merges them into the final MP4.
 - Export audio under `runtime/data/audio/YYYY-MM-DD/<ID>/`.
 - Export silent visual video under `runtime/data/visuals/YYYY-MM-DD/<ID>/`.
 - Export final MP4 under `runtime/data/videos/YYYY-MM-DD/<ID>/`.
-- Update `Video_Path`, generate `Caption`, and set `Status = Draft` only after merge.
+- The runner returns a fallback `Caption` after merge, then the workflow uses Gemini to read `Narrator_Script` / `Extracted_Content` and rewrite it into a TikTok caption plus hashtags.
+- Update `Video_Path`, final `Caption`, and set `Status = Draft` only after merge and AI caption finalization.
 
 MVP notes:
 
-- Local rendering should use `runtime/assets/background.mp4`.
+- Local rendering uses `runtime/assets/background.mp4` as fallback. Put multiple background videos in `runtime/assets/backgrounds/` to let Phase 3 pick one automatically.
+- `BACKGROUND_VIDEO_PICK=hash` keeps the same post on the same background; use `random` for a different background each render or `first` for the first file alphabetically.
+- Backgrounds can be downloaded with `python -m yt_dlp -f "bestvideo[height<=1080][ext=mp4]+bestaudio/best" --merge-output-format mp4 -o "runtime/assets/backgrounds/%(title)s.%(ext)s" URL`.
 - `FPT_TTS_API_KEY` enables FPT.AI Speech TTS.
 - `FPT_TTS_VOICE` controls the FPT voice. Current default: `banmai`.
 - `FPT_TTS_SPEED` controls FPT speed. Current default: `0`.
@@ -109,35 +114,53 @@ MVP notes:
 - `SCRIPT_REWRITE_ENABLED` toggles optional AI rewrite for `Narrator_Script`.
 - `GEMINI_API_KEY` is the preferred key for the Phase 2 rewrite node.
 - `SCRIPT_REWRITE_MODEL` and `SCRIPT_REWRITE_BASE_URL` configure the Gemini rewrite request.
+- `AI_CAPTION_ENABLED` toggles the Phase 3C Gemini caption node; `AI_CAPTION_MODEL` controls its model.
 - Optional `SAPI_VOICE` can select an installed Windows offline voice if network TTS is unavailable.
 - Final duration follows the generated narration length, with a short tail buffer.
-- Add `Audio_Path`, `Visual_Video_Path`, `Caption`, `Admin_Decision`, and `TikTok_Publish_ID` columns to the Google Sheet before importing the updated Phase 3 and Phase 4 workflows.
+- Add `Audio_Path`, `Audio_Timing`, `Visual_Video_Path`, `Caption`, `Draft_Video_URL`, `Draft_Drive_File_ID`, `Admin_Decision`, `TikTok_Publish_ID`, and `Published_URL` columns to the Google Sheet before importing the updated Phase 3 and Phase 4 workflows.
 - Generated media stays in `runtime/` and should not be committed to git.
 - The workflow should update the same row by `ID`.
 
 ### Phase 4: Publisher
 
-File:
+Current status: balanced Phase 4 workflow implemented in n8n, with noisy helper logic moved into the Python runner.
 
-- `workflows/04-auto-publisher.json`
+Current n8n workflows:
 
-Current status: Sheet approval + manual TikTok upload handoff implemented in workflow JSON.
+- `Phase 4 - Review and Publish v2` (`jIwgeCiSLUefvteg`): visible review, approval callback, and publish branches.
+- Old/split Phase 4 workflows and stale local exports were removed to avoid duplicate callbacks or accidental re-imports.
+
+Runner code:
+
+- `src/phase4_compact_helper.py`: saves admin decisions and acknowledges Telegram callbacks. It also keeps a compact helper path, but the active review branch uses n8n Google Drive OAuth nodes for large video files.
+- `src/tiktok_playwright_publisher.py`: publishes approved videos through a browser/cookie uploader using `tiktok-uploader`.
+- `runner/app.py`: exposes `/phase4/compact`.
 
 MVP behavior:
 
-- Read completed drafts where `Status = Draft`.
-- Admin reviews local `Video_Path`, edits `Caption` if needed, then sets `Admin_Decision = approve` or `reject`.
-- Set rejected rows to `Status = Rejected`.
-- Set approved rows to `Status = Ready To Upload`.
-- Keep `Video_Path` and `Caption` ready for manual TikTok upload.
-- After the upload is done manually, fill `Published_URL` in the sheet.
-- The workflow converts `Ready To Upload + Published_URL` to `Status = Uploaded`.
+- Manual tick reads the sheet, picks one eligible Phase 4 action, and routes it to review or publish.
+- If a completed draft has `Status = Draft` and empty `Draft_Video_URL`, n8n uploads the local `Video_Path` to Google Drive with OAuth, shares the link, sends that link to Telegram with approve/reject buttons, and writes the review fields back to the sheet.
+- Admin reviews `Draft_Video_URL`, edits `Caption` if needed, then clicks the Telegram approve or reject button.
+- Telegram callback calls the runner with `mode = telegram_callback`.
+- Rejected rows are set to `Status = Rejected`.
+- Approved rows are set to `Status = Approved`.
+- After an admin approves from Telegram, the callback branch immediately reads that row, keeps `Status = Approved`, writes a publish-start note, calls `/phase4/publish`, and then writes the final `Status`, `TikTok_Publish_ID`, `Published_URL` when available, and `Note`.
+- Manual tick can still publish an already-approved row as a fallback/debug path.
+
+Telegram callback setup:
+
+- Activate `Phase 4 - Review and Publish v2`.
+- Point the Telegram bot webhook to the production webhook URL for path `phase4-review-callback`.
+- Callback payloads use `phase4|approve|<ID>` and `phase4|reject|<ID>`.
 
 Known notes:
 
-- Phase 4 no longer depends on TikTok API production approval.
-- The final TikTok upload step is intentionally manual to avoid OAuth/app-review blockers for internal use.
-- `Published_URL` is now the main confirmation field for a completed upload.
+- `TIKTOK_PUBLISHER_MODE=playwright` is the default practical path because TikTok API OAuth/app setup is blocked for this project.
+- Browser publishing authenticates in this order: `TIKTOK_SESSION_ID`, cookies file at `TIKTOK_UPLOADER_COOKIES_PATH` / `tiktok_cookies.json`, then `TIKTOK_USERNAME` + `TIKTOK_PASSWORD`.
+- Username/password login is the most automated path, but TikTok may still interrupt it with captcha, 2FA, or account checkpoints. A warm session/cookie is usually more reliable.
+- `TIKTOK_DRY_RUN` only applies to the old API publisher path.
+- Review videos are sent as Google Drive links because Telegram Bot API rejects large direct uploads with `413 Request Entity Too Large`.
+- `Published_URL` may remain empty immediately after upload; `TikTok_Publish_ID` is the primary machine confirmation.
 
 ## Credentials And Runtime
 
@@ -152,7 +175,7 @@ Later:
 
 - Gemini API key for Vision/script extraction.
 - TTS provider for Vietnamese narration.
-- Optional notification channel for manual-upload reminders.
+- Optional Telegram bot for draft-review notifications.
 
 ## Git Guidance
 
@@ -184,11 +207,12 @@ D:\Project III\n8n-ai-video\
     01-threads-miner.json
     02-screenshot-extract.json
     03-video-maker.json
-    04-auto-publisher.json
   src\
     threads_miner.py
     screenshot_extractor.py
     video_factory.py
+    phase4_compact_helper.py
+    tiktok_playwright_publisher.py
   runtime\
     assets\
       background.mp4

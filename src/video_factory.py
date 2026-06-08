@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from gtts import gTTS
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 try:
     import edge_tts
@@ -37,8 +39,13 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == "src" else Path(__file__).resolve().parent
-TARGET_SIZE = (1080, 1920)
+load_dotenv(PROJECT_ROOT / ".env", override=True)
+TARGET_SIZE = (
+    int(os.getenv("VIDEO_WIDTH", "1080")),
+    int(os.getenv("VIDEO_HEIGHT", "1920")),
+)
 DEFAULT_BACKGROUND = "runtime/assets/background.mp4"
+DEFAULT_BACKGROUND_DIR = "runtime/assets/backgrounds"
 DEFAULT_AUDIO_DIR = "runtime/data/audio"
 DEFAULT_VISUALS_DIR = "runtime/data/visuals"
 DEFAULT_VIDEOS_DIR = "runtime/data/videos"
@@ -48,7 +55,21 @@ DEFAULT_DISCUSSION_VOICES: list[str] = []
 DEFAULT_AUTHOR_VOICES: list[str] = []
 DEFAULT_EDGE_TTS_RATE = "+12%"
 FPT_TTS_URL = "https://api.fpt.ai/hmi/tts/v5"
-OVERLAY_TOP_RATIO = 0.25
+OVERLAY_TOP_RATIO = float(os.getenv("OVERLAY_TOP_RATIO", "0.5"))
+OVERLAY_WIDTH_RATIO = max(0.55, min(0.95, float(os.getenv("OVERLAY_WIDTH_RATIO", "0.82"))))
+OVERLAY_CORNER_RADIUS_RATIO = max(
+    0.01,
+    min(0.12, float(os.getenv("OVERLAY_CORNER_RADIUS_RATIO", "0.035"))),
+)
+OVERLAY_SHADOW_OPACITY = max(0, min(255, int(os.getenv("OVERLAY_SHADOW_OPACITY", "105"))))
+VIDEO_ENCODE_PRESET = os.getenv("VIDEO_ENCODE_PRESET", "medium").strip() or "medium"
+VIDEO_CRF = os.getenv("VIDEO_CRF", "18").strip() or "18"
+VIDEO_TARGET_BITRATE = os.getenv("VIDEO_TARGET_BITRATE", "8M").strip() or "8M"
+VIDEO_MAXRATE = os.getenv("VIDEO_MAXRATE", "10M").strip() or "10M"
+VIDEO_BUFSIZE = os.getenv("VIDEO_BUFSIZE", "20M").strip() or "20M"
+AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "192k").strip() or "192k"
+BACKGROUND_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
+BACKGROUND_VIDEO_PICK = os.getenv("BACKGROUND_VIDEO_PICK", "hash").strip().lower() or "hash"
 MAX_OVERLAY_IMAGES = 40
 VISUAL_TIMING_LEAD_SECONDS = float(os.getenv("VISUAL_TIMING_LEAD_SECONDS", "2.0"))
 AUDIO_TRIM_SEGMENT_SILENCE = str(os.getenv("AUDIO_TRIM_SEGMENT_SILENCE", "false")).strip().lower() in {"1", "true", "yes"}
@@ -56,6 +77,16 @@ AUDIO_SILENCE_THRESHOLD_DB = os.getenv("AUDIO_SILENCE_THRESHOLD_DB", "-45dB")
 AUDIO_LEADING_SILENCE_SECONDS = float(os.getenv("AUDIO_LEADING_SILENCE_SECONDS", "0.08"))
 AUDIO_TRAILING_SILENCE_SECONDS = float(os.getenv("AUDIO_TRAILING_SILENCE_SECONDS", "0.18"))
 AUDIO_SEGMENT_OVERLAP_SECONDS = max(0.0, float(os.getenv("AUDIO_SEGMENT_OVERLAP_SECONDS", "0.15")))
+VIENEU_TTS_ENABLED = str(os.getenv("VIENEU_TTS_ENABLED", "false")).strip().lower() in {"1", "true", "yes"}
+VIENEU_MODE = os.getenv("VIENEU_MODE", "standard").strip() or "standard"
+VIENEU_BACKBONE_REPO = os.getenv("VIENEU_BACKBONE_REPO", "").strip()
+VIENEU_BACKBONE_DEVICE = os.getenv("VIENEU_BACKBONE_DEVICE", "").strip()
+VIENEU_CODEC_REPO = os.getenv("VIENEU_CODEC_REPO", "").strip()
+VIENEU_CODEC_DEVICE = os.getenv("VIENEU_CODEC_DEVICE", "").strip()
+VIENEU_VOICE_REF = os.getenv("VIENEU_VOICE_REF", "").strip()
+VIENEU_VOICE_REF_TEXT = os.getenv("VIENEU_VOICE_REF_TEXT", "").strip()
+_VIENEU_CLIENT = None
+_VIENEU_VOICE = None
 
 
 def log(message: str) -> None:
@@ -103,6 +134,34 @@ def resolve_media_path(value: str | Path) -> Path:
             return legacy_path
 
     return path
+
+
+def list_background_videos(background_dir: Path) -> list[Path]:
+    if not background_dir.exists() or not background_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in background_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in BACKGROUND_VIDEO_EXTENSIONS
+    )
+
+
+def choose_background_video(post_id: str, background_path: Path, background_dir: Path | None = None) -> Path:
+    candidates = list_background_videos(background_dir) if background_dir else []
+    if not candidates:
+        return background_path
+
+    strategy = BACKGROUND_VIDEO_PICK
+    if strategy == "first":
+        return candidates[0]
+    if strategy == "random":
+        import random
+
+        return random.choice(candidates)
+
+    digest = hashlib.sha256(str(post_id or "").encode("utf-8")).hexdigest()
+    index = int(digest[:8], 16) % len(candidates)
+    return candidates[index]
 
 
 def safe_filename(value: str) -> str:
@@ -438,6 +497,57 @@ def screenshot_paths(screenshots: dict) -> list[Path]:
         if item:
             paths.append(resolve_media_path(item))
     return [path for path in paths if path.exists()]
+
+
+def style_screenshot_card(source_path: Path, output_path: Path) -> Path:
+    with Image.open(source_path) as source:
+        image = source.convert("RGBA")
+
+    width, height = image.size
+    radius = max(8, round(min(width, height) * OVERLAY_CORNER_RADIUS_RATIO))
+    padding = max(12, round(width * 0.025))
+    shadow_offset = max(4, round(padding * 0.3))
+    shadow_blur = max(8, round(padding * 0.75))
+
+    rounded_mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(rounded_mask).rounded_rectangle(
+        (0, 0, width - 1, height - 1),
+        radius=radius,
+        fill=255,
+    )
+    original_alpha = image.getchannel("A")
+    image.putalpha(ImageChops.multiply(original_alpha, rounded_mask))
+
+    canvas_size = (width + padding * 2, height + padding * 2)
+    shadow = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    shadow_mask = Image.new("L", canvas_size, 0)
+    ImageDraw.Draw(shadow_mask).rounded_rectangle(
+        (
+            padding,
+            padding + shadow_offset,
+            padding + width - 1,
+            padding + shadow_offset + height - 1,
+        ),
+        radius=radius,
+        fill=OVERLAY_SHADOW_OPACITY,
+    )
+    shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(shadow_blur))
+    shadow.putalpha(shadow_mask)
+
+    canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    canvas.alpha_composite(shadow)
+    canvas.alpha_composite(image, (padding, padding))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, format="PNG", optimize=True)
+    return output_path
+
+
+def prepare_overlay_images(paths: list[Path], output_dir: Path) -> list[Path]:
+    prepared = []
+    for index, path in enumerate(paths):
+        output_path = output_dir / f"overlay_{index:02d}.png"
+        prepared.append(style_screenshot_card(path, output_path))
+    return prepared
 
 
 def estimate_duration(text: str, image_count: int) -> float:
@@ -841,15 +951,97 @@ def generate_gtts_stable(text: str, output_path: Path) -> Path:
     return concat_audio_files(chunk_paths, output_path)
 
 
+def get_vieneu_client():
+    global _VIENEU_CLIENT
+    if _VIENEU_CLIENT is not None:
+        return _VIENEU_CLIENT
+
+    try:
+        from vieneu import Vieneu
+    except ImportError as exc:
+        raise RuntimeError("vieneu is not installed") from exc
+
+    kwargs = {}
+    if VIENEU_BACKBONE_REPO:
+        kwargs["backbone_repo"] = VIENEU_BACKBONE_REPO
+    if VIENEU_BACKBONE_DEVICE:
+        kwargs["backbone_device"] = VIENEU_BACKBONE_DEVICE
+    if VIENEU_CODEC_REPO:
+        kwargs["codec_repo"] = VIENEU_CODEC_REPO
+    if VIENEU_CODEC_DEVICE:
+        kwargs["codec_device"] = VIENEU_CODEC_DEVICE
+
+    _VIENEU_CLIENT = Vieneu(mode=VIENEU_MODE, **kwargs)
+    return _VIENEU_CLIENT
+
+
+def get_vieneu_voice(client):
+    global _VIENEU_VOICE
+    if _VIENEU_VOICE is not None:
+        return _VIENEU_VOICE
+
+    if not VIENEU_VOICE_REF:
+        return None
+
+    ref_audio = Path(VIENEU_VOICE_REF)
+    if not ref_audio.is_absolute():
+        ref_audio = PROJECT_ROOT / ref_audio
+    if not ref_audio.exists():
+        raise RuntimeError(f"VIENEU_VOICE_REF does not exist: {ref_audio}")
+
+    _VIENEU_VOICE = client.encode_reference(str(ref_audio))
+    return _VIENEU_VOICE
+
+
+def generate_vieneu_tts_stable(text: str, output_path: Path) -> Path:
+    chunks = split_tts_chunks(text, max_chars=500)
+    if not chunks:
+        raise RuntimeError("No text available for VieNeu TTS")
+
+    client = get_vieneu_client()
+    voice = get_vieneu_voice(client)
+    output_path = output_path.with_suffix(".wav")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if len(chunks) == 1:
+        infer_kwargs = {"text": chunks[0]}
+        if voice is not None:
+            infer_kwargs["voice"] = voice
+        audio = client.infer(**infer_kwargs)
+        client.save(audio, str(output_path))
+        return output_path
+
+    chunk_dir = output_path.parent / f"{output_path.stem}_vieneu_chunks"
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+    chunk_paths = []
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_path = chunk_dir / f"{output_path.stem}_{index:02d}.wav"
+        infer_kwargs = {"text": chunk}
+        if voice is not None:
+            infer_kwargs["voice"] = voice
+        audio = client.infer(**infer_kwargs)
+        client.save(audio, str(chunk_path))
+        chunk_paths.append(chunk_path)
+
+    return concat_audio_files(chunk_paths, output_path)
+
+
 def generate_audio(text: str, output_path: Path, fallback_duration: float, voice: str, fpt_api_key: str, fpt_voice: str, fpt_speed: str) -> tuple[Path, str]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if VIENEU_TTS_ENABLED:
+        try:
+            vieneu_path = generate_vieneu_tts_stable(text, output_path.with_suffix(".wav"))
+            return vieneu_path, f"tts=vieneu mode={VIENEU_MODE}"
+        except Exception as exc:
+            log(f"VieNeu TTS failed, trying FPT TTS: {exc}")
 
     if fpt_api_key:
         try:
             generate_fpt_tts_stable(text, output_path, fpt_api_key, fpt_voice, fpt_speed)
             return output_path, f"tts=fpt voice={fpt_voice} speed={fpt_speed}"
         except Exception as exc:
-            log(f"FPT TTS failed, trying edge-tts: {exc}")
+            log(f"FPT TTS failed, trying next TTS engine: {exc}")
 
     try:
         generate_edge_tts_stable(text, output_path, voice)
@@ -903,6 +1095,15 @@ def generate_segment_audio(
             return output_path, f"tts=edge-tts voice={voice} rate={DEFAULT_EDGE_TTS_RATE}"
         except Exception as exc:
             raise RuntimeError(f"edge-tts failed for fixed segment voice {voice}: {exc}") from exc
+
+    if tts_engine == "vieneu":
+        if not VIENEU_TTS_ENABLED:
+            raise RuntimeError("VieNeu TTS selected but VIENEU_TTS_ENABLED is false")
+        try:
+            vieneu_path = generate_vieneu_tts_stable(text, output_path.with_suffix(".wav"))
+            return vieneu_path, f"tts=vieneu mode={VIENEU_MODE}"
+        except Exception as exc:
+            raise RuntimeError(f"VieNeu TTS failed for fixed segment: {exc}") from exc
 
     if tts_engine == "gtts":
         try:
@@ -1421,7 +1622,7 @@ def build_overlay_plan(paths: list[Path], text_blocks: list[str], duration: floa
                 "path": path,
                 "start": round(start, 3),
                 "end": round(max(start + 1.0, end), 3),
-                "width": TARGET_SIZE[0],
+                "width": round(TARGET_SIZE[0] * OVERLAY_WIDTH_RATIO),
             }
         )
     return plan
@@ -1466,7 +1667,7 @@ def build_overlay_plan_from_timing(paths: list[Path], timing_data: list[dict], d
                 "path": sequence[image_index],
                 "start": start,
                 "end": end,
-                "width": TARGET_SIZE[0],
+                "width": round(TARGET_SIZE[0] * OVERLAY_WIDTH_RATIO),
             }
         )
 
@@ -1495,7 +1696,7 @@ def build_overlay_plan_from_timing(paths: list[Path], timing_data: list[dict], d
                     "path": sequence[fallback_index],
                     "start": start,
                     "end": max(start + 0.2, end),
-                    "width": TARGET_SIZE[0],
+                    "width": round(TARGET_SIZE[0] * OVERLAY_WIDTH_RATIO),
                 }
             )
             existing_keys.add(key)
@@ -1521,7 +1722,9 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
 
     if background_path.exists():
         command.extend(["-stream_loop", "-1", "-i", str(background_path)])
-        bg_label = "[0:v]scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920,fps={fps},trim=duration={duration},setpts=PTS-STARTPTS[base]".format(
+        bg_label = "[0:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},fps={fps},trim=duration={duration},setpts=PTS-STARTPTS[base]".format(
+            width=target_w,
+            height=target_h,
             fps=fps,
             duration=duration
         )
@@ -1573,13 +1776,17 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
             "-c:v",
             "libx264",
             "-crf",
-            "18",
+            VIDEO_CRF,
             "-preset",
-            "veryfast",
+            VIDEO_ENCODE_PRESET,
+            "-b:v",
+            VIDEO_TARGET_BITRATE,
+            "-maxrate",
+            VIDEO_MAXRATE,
+            "-bufsize",
+            VIDEO_BUFSIZE,
             "-profile:v",
             "high",
-            "-level",
-            "4.1",
             "-movflags",
             "+faststart",
             str(output_path),
@@ -1617,8 +1824,12 @@ def write_voice(
 
     if audio_segments:
         effective_discussion_voices = discussion_voices if content_mode == "discussion" else []
-        voice_engines = ["edge"] if (effective_discussion_voices or author_voices) else []
-        if not voice_engines:
+        voice_engines = []
+        if VIENEU_TTS_ENABLED:
+            voice_engines.append("vieneu")
+        if effective_discussion_voices or author_voices:
+            voice_engines.append("edge")
+        else:
             if fpt_api_key:
                 voice_engines.append("fpt")
             voice_engines.append("edge")
@@ -1741,6 +1952,7 @@ def build_visual(
 
     output_dir = dated_output_dir(visuals_dir, post_id)
     output_path = output_dir / "visual.mp4"
+    images = prepare_overlay_images(images, output_dir / "overlays")
     overlay_plan = build_overlay_plan_from_timing(images, timing_data, duration) if timing_data else []
     if not overlay_plan:
         overlay_plan = build_overlay_plan(images, text_blocks, duration)
@@ -1752,7 +1964,7 @@ def build_visual(
         "ID": post_id,
         "Visual_Video_Path": str(output_path),
         "Status": "In Progress",
-        "Note": f"Phase 3B: visual ready duration={round(duration, 2)}s images={len(images)} overlays={len(overlay_plan)} lead={VISUAL_TIMING_LEAD_SECONDS}s sync={'audio-timing' if timing_data else ('segments' if parse_extracted_segments(extracted_content) else 'script')}",
+        "Note": f"Phase 3B: visual ready duration={round(duration, 2)}s images={len(images)} overlays={len(overlay_plan)} background={background_path.name} lead={VISUAL_TIMING_LEAD_SECONDS}s sync={'audio-timing' if timing_data else ('segments' if parse_extracted_segments(extracted_content) else 'script')}",
     }
 
 
@@ -1796,19 +2008,25 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
         "-c:v",
         "libx264",
         "-crf",
-        "18",
+        VIDEO_CRF,
         "-preset",
-        "veryfast",
+        VIDEO_ENCODE_PRESET,
+        "-b:v",
+        VIDEO_TARGET_BITRATE,
+        "-maxrate",
+        VIDEO_MAXRATE,
+        "-bufsize",
+        VIDEO_BUFSIZE,
         "-profile:v",
         "high",
-        "-level",
-        "4.1",
         "-c:a",
         "aac",
         "-ar",
         "44100",
         "-ac",
         "1",
+        "-b:a",
+        AUDIO_BITRATE,
         "-movflags",
         "+faststart",
         str(output_path),
@@ -1820,6 +2038,8 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
     return {
         "ID": post_id,
         "Video_Path": str(output_path),
+        "Narrator_Script": script,
+        "Extracted_Content": extracted_content,
         "Caption": build_caption(script=script, extracted_content=extracted_content),
         "Status": "Draft",
         "Note": f"Phase 3C: draft ready duration={round(duration, 2)}s",
@@ -1837,6 +2057,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--audio-timing")
     parser.add_argument("--visual-path")
     parser.add_argument("--background", default=os.getenv("BACKGROUND_VIDEO_PATH", DEFAULT_BACKGROUND))
+    parser.add_argument("--background-dir", default=os.getenv("BACKGROUND_VIDEO_DIR", DEFAULT_BACKGROUND_DIR))
     parser.add_argument("--audio-dir", default=os.getenv("AUDIO_DIR", DEFAULT_AUDIO_DIR))
     parser.add_argument("--visuals-dir", default=os.getenv("VISUALS_DIR", DEFAULT_VISUALS_DIR))
     parser.add_argument("--videos-dir", default=os.getenv("VIDEOS_DIR", DEFAULT_VIDEOS_DIR))
@@ -1883,12 +2104,17 @@ def main() -> int:
         elif args.mode == "visual":
             if not args.screenshots:
                 raise RuntimeError("--screenshots is required for mode=visual")
+            background_path = choose_background_video(
+                args.id,
+                resolve_path(args.background),
+                resolve_path(args.background_dir) if args.background_dir else None,
+            )
             result = build_visual(
                 post_id=args.id,
                 screenshots=parse_screenshots(args.screenshots),
                 script=args.script or "",
                 extracted_content=args.extracted_content or "",
-                background_path=resolve_path(args.background),
+                background_path=background_path,
                 visuals_dir=resolve_path(args.visuals_dir),
                 audio_path=resolve_path(args.audio_path) if args.audio_path else None,
                 audio_timing=args.audio_timing or "",

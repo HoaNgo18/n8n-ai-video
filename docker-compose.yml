@@ -12,11 +12,14 @@ services:
       N8N_PORT: 5678
       N8N_PROTOCOL: http
       N8N_SECURE_COOKIE: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_RESTRICT_FILE_ACCESS_TO: /home/node/.n8n-files
       GENERIC_TIMEZONE: Asia/Saigon
       TZ: Asia/Saigon
     volumes:
       - n8n_data:/home/node/.n8n
       - ./:/workspace
+      - ./runtime:/home/node/.n8n-files/runtime
     working_dir: /workspace
   runner:
     build:
@@ -30,10 +33,17 @@ services:
       - .env
     environment:
       PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium
+      GOOGLE_SERVICE_ACCOUNT_FILE: /workspace/google-service-account.json
+      HF_HOME: /models/huggingface
+      HUGGINGFACE_HUB_CACHE: /models/huggingface/hub
       TZ: Asia/Saigon
     volumes:
       - ./:/workspace
+      - ../project-iii-492308-fb6a394893e0.json:/workspace/google-service-account.json:ro
+      - E:/n8n-ai-video-cache:/models
     working_dir: /workspace
 
 volumes:
   n8n_data:
+    external: true
+    name: n8n_data

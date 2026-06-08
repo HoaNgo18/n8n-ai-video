@@ -375,7 +375,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    load_dotenv(ENV_PATH)
+    load_dotenv(ENV_PATH, override=True)
     args = parse_args()
     post_id = decode_cli_text(args.id)
     video_path = resolve_path(decode_cli_text(args.video_path))
@@ -389,7 +389,7 @@ def main() -> int:
             "ID": post_id,
             "TikTok_Publish_ID": "",
             "Published_URL": "",
-            "Status": "Publish Failed",
+            "Status": "Failed",
             "Note": f"Phase 4 publish failed: {str(exc)[:320]}",
         }
 

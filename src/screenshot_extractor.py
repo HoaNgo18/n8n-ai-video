@@ -25,6 +25,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
+from PIL import Image
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
@@ -42,6 +43,8 @@ TARGET_COMMENT_COUNT = 5
 TARGET_DISCUSSION_COMMENT_COUNT = 6
 MAX_STORY_CONTINUATIONS = 12
 MAX_TOTAL_SEGMENTS = 12
+MIN_SCREENSHOT_BLOCK_WIDTH = 320
+MIN_SCREENSHOT_BLOCK_HEIGHT = 64
 MAX_SCRIPT_TEXT_LENGTH = 8000
 MIN_ACCEPTED_COMMENT_COUNT = 3
 MAX_COMMENT_CAPTURE_ATTEMPTS = 8
@@ -158,6 +161,7 @@ VIET_PATTERN = re.compile(
     "]",
     re.IGNORECASE,
 )
+THREADS_TIME_UNIT_RE = r"(?:s|m|h|d|w|giây|phút|giờ|ngày|tuần|tháng|năm)"
 
 
 @dataclass(frozen=True)
@@ -171,6 +175,8 @@ class Config:
     post_login_wait_ms: int
     force_login: bool
     headless: bool
+    screenshot_theme: str
+    device_scale_factor: float
 
 
 def log(message: str) -> None:
@@ -372,13 +378,13 @@ def classify_content_quality(
 def strip_leading_handle_and_time(text: str) -> str:
     text = clean_text(text)
     text = re.sub(
-        r"^(?:Pinned\s+)?(?:@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){0,8})\s+\d+\s*[mhdsw]\b\s*",
+        rf"^(?:Pinned\s+)?(?:@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){{0,8}})\s+\d+\s*{THREADS_TIME_UNIT_RE}\b\s*",
         "",
         text,
         flags=re.IGNORECASE,
     )
-    text = re.sub(r"^@?[A-Za-z0-9_.]{3,}\s+\d+\s*[mhdsw]\b\s*", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"^\d+\s*[mhdsw]\b\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(rf"^@?[A-Za-z0-9_.]{{3,}}\s+\d+\s*{THREADS_TIME_UNIT_RE}\b\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(rf"^\d+\s*{THREADS_TIME_UNIT_RE}\b\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^@?[A-Za-z0-9.]*_[A-Za-z0-9_.-]*\b[\s:.,;-]*", "", text, flags=re.IGNORECASE)
     return clean_text(text)
 
@@ -407,7 +413,29 @@ def strip_leading_known_author(text: str, *author_values: object) -> str:
 
 def strip_trailing_metrics(text: str) -> str:
     text = clean_text(text)
-    text = re.sub(r"(?:\s+\d+(?:[.,]\d+)?K?){2,}\s*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:\s+\d+(?:[.,]\d+)?[KM]?){2,}\s*$", "", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def strip_trailing_comment_metric(text: str) -> str:
+    text = clean_text(text)
+    text = re.sub(r"\s+\d+(?:[.,]\d+)?[KM]?\s*$", "", text, flags=re.IGNORECASE)
+    return clean_text(text)
+
+
+def normalize_screen_typos(text: str) -> str:
+    replacements = (
+        (r"\bgieets\b", "giết"),
+        (r"\bdiết\b", "giết"),
+        (r"\bdieets\b", "giết"),
+        (r"\bko\b", "không"),
+        (r"\bngta\b", "người ta"),
+    )
+    for pattern, replacement in replacements:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    text = re.sub(r"\bM\b", "Mày", text)
+    text = re.sub(r"\b1\s+con người\b", "một con người", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b1\s+phần\b", "một phần", text, flags=re.IGNORECASE)
     return clean_text(text)
 
 
@@ -462,12 +490,31 @@ def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
 
     if is_comment:
         text = re.sub(r"^\u00b7\s*", "", text)
+        text = strip_trailing_comment_metric(text)
+        text = normalize_screen_typos(text)
     return clean_text(text)
 
 
 def is_low_value_comment(text: str) -> bool:
     normalized = normalize_search_text(text)
     if not normalized:
+        return True
+    ui_phrases = (
+        "hang dau",
+        "xem hoat dong",
+        "tra loi",
+        "reply",
+        "view activity",
+        "top",
+    )
+    compact = normalized.strip(" .,:;")
+    if compact in ui_phrases:
+        return True
+    if re.fullmatch(r"(?:\d+(?:[.,]\d+)?[km]?\s*){1,4}", compact):
+        return True
+    if len(normalized.split()) <= 6 and re.search(r"\b\d+(?:[.,]\d+)?k?\b", normalized):
+        return True
+    if any(phrase in normalized for phrase in ("tra loi ", "reply to ", "xem hoat dong")) and len(normalized.split()) <= 5:
         return True
     navigation_patterns = (
         r"\bde nghi\b.*\bchu tus\b.*\bso\b.*\btheo doi\b",
@@ -477,6 +524,11 @@ def is_low_value_comment(text: str) -> bool:
         r"\btag\b.*\bphan\b",
     )
     return any(re.search(pattern, normalized) for pattern in navigation_patterns)
+
+
+def text_identity(text: str, limit: int = 220) -> str:
+    normalized = normalize_search_text(clean_text(text))
+    return re.sub(r"[^0-9a-z]+", "", normalized)[:limit]
 
 
 def build_basic_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str:
@@ -509,6 +561,9 @@ def build_narrator_script(post_text: str, comments: list[dict[str, str]]) -> str
 def trim_ui_text(text: str) -> str:
     text = clean_text(text)
     text = re.sub(r"\bTop\s+View activity\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bHàng\s+đầu\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bXem\s+hoạt\s+động\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bTrả\s+lời\s+[A-Za-z0-9_.-]+\.{0,3}", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\bReply\s+to\s+[A-Za-z0-9_.-]+\.{0,3}", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\bTranslate\b", " ", text, flags=re.IGNORECASE)
     return clean_text(text)
@@ -542,7 +597,7 @@ def extract_block_metadata(text: str) -> dict[str, object]:
     raw_text = clean_text(text)
     stripped = re.sub(r"^\s*Pinned\s+", "", raw_text, flags=re.IGNORECASE)
     match = re.match(
-        r"^(?P<author>@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){0,8})\s+\d+\s*[mhdsw]\b(?P<rest>.*)$",
+        rf"^(?P<author>@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){{0,8}})\s+\d+\s*{THREADS_TIME_UNIT_RE}\b(?P<rest>.*)$",
         stripped,
         flags=re.IGNORECASE,
     )
@@ -645,6 +700,8 @@ def story_capture_gap(post_text: str, continuations: list[dict[str, str]]) -> tu
     combined = "\n".join([post_text, *[item.get("text", "") for item in continuations]])
     expected = expected_story_part_count(combined)
     if expected <= 1:
+        return False, ""
+    if len(continuations) + 1 >= expected:
         return False, ""
 
     captured_numbers = detected_story_part_numbers(combined)
@@ -933,6 +990,10 @@ async def wait_for_element_media(page: Page, handle) -> None:
 async def get_pressable_blocks(page: Page) -> list[dict]:
     handles = await page.query_selector_all(POST_LOCATOR)
     blocks = []
+    try:
+        scroll_y = float(await page.evaluate("window.scrollY || 0"))
+    except Exception:
+        scroll_y = 0.0
 
     for index, handle in enumerate(handles):
         try:
@@ -940,12 +1001,38 @@ async def get_pressable_blocks(page: Page) -> list[dict]:
             box = await handle.bounding_box()
             if not box:
                 continue
+            media_info = await handle.evaluate(
+                """
+                (el) => {
+                  const rootRect = el.getBoundingClientRect();
+                  const mediaItems = Array.from(el.querySelectorAll('img, video'));
+                  let mediaArea = 0;
+                  let largeMediaCount = 0;
+                  for (const item of mediaItems) {
+                    const rect = item.getBoundingClientRect();
+                    if (rect.width < 80 || rect.height < 80) continue;
+                    const area = rect.width * rect.height;
+                    mediaArea += area;
+                    if (rect.width >= 220 && rect.height >= 160) largeMediaCount += 1;
+                  }
+                  const rootArea = Math.max(1, rootRect.width * rootRect.height);
+                  return {
+                    media_count: mediaItems.length,
+                    large_media_count: largeMediaCount,
+                    media_area_ratio: mediaArea / rootArea,
+                  };
+                }
+                """
+            )
+            box = dict(box)
+            box["document_y"] = float(box.get("y", 0)) + scroll_y
             blocks.append(
                 {
                     "index": index,
                     "handle": handle,
                     "text": text,
                     "rect": box,
+                    "media": media_info,
                     "meta": extract_block_metadata(text),
                 }
             )
@@ -957,14 +1044,28 @@ async def get_pressable_blocks(page: Page) -> list[dict]:
 
 def is_reasonable_pressable(block: dict) -> bool:
     text = clean_text(block.get("text", ""))
+    body_text = cleanup_screen_text(text, is_comment=True)
     rect = block.get("rect", {})
+    media = block.get("media", {}) or {}
     if len(text) < 18:
         return False
-    if rect.get("width", 0) < 320 or rect.get("height", 0) < 44:
+    if rect.get("width", 0) < MIN_SCREENSHOT_BLOCK_WIDTH or rect.get("height", 0) < MIN_SCREENSHOT_BLOCK_HEIGHT:
         return False
     if rect.get("height", 0) > 1400:
         return False
-    noise = ("For you New thread Search Activity Profile", "Log in", "Sign up", "Not all who wander")
+    if is_low_value_comment(text):
+        return False
+    if media.get("large_media_count", 0) and media.get("media_area_ratio", 0) >= 0.42:
+        if len(body_text.split()) < 14 or not is_vietnamese(body_text):
+            return False
+    noise = (
+        "For you New thread Search Activity Profile",
+        "Log in",
+        "Sign up",
+        "Not all who wander",
+        "Hàng đầu Xem hoạt động",
+        "Trả lời",
+    )
     return not any(fragment.lower() in text.lower() for fragment in noise)
 
 
@@ -1043,11 +1144,46 @@ async def refresh_block_box(block: dict) -> dict:
         await handle.scroll_into_view_if_needed(timeout=5000)
     except Exception:
         pass
-    box = await handle.bounding_box()
+    try:
+        box = await handle.bounding_box()
+    except Exception:
+        return block.get("rect", {})
     if not box:
         return block.get("rect", {})
-    block["rect"] = box
-    return box
+    rect = dict(box)
+    try:
+        scroll_y = float(await handle.evaluate("window.scrollY || 0"))
+    except Exception:
+        scroll_y = 0.0
+    rect["document_y"] = float(rect.get("y", 0)) + scroll_y
+    block["rect"] = rect
+    return rect
+
+
+async def find_current_matching_block(page: Page, block: dict) -> dict | None:
+    rect = block.get("rect", {}) or {}
+    document_y = rect.get("document_y")
+    if document_y is not None:
+        try:
+            await page.evaluate("(y) => window.scrollTo(0, Math.max(0, y - 120))", float(document_y))
+            await page.wait_for_timeout(500)
+            await prepare_threads_page(page)
+        except Exception:
+            pass
+
+    target_key = text_identity(block.get("text", ""))
+    if not target_key:
+        return None
+    candidates = [item for item in await get_pressable_blocks(page) if is_reasonable_pressable(item)]
+    for candidate in candidates:
+        candidate_key = text_identity(candidate.get("text", ""))
+        if candidate_key == target_key:
+            return candidate
+    for candidate in candidates:
+        candidate_key = text_identity(candidate.get("text", ""))
+        if target_key and (target_key in candidate_key or candidate_key in target_key):
+            return candidate
+    return None
 
 
 async def trim_post_rect_before_discussion_toolbar(page: Page, rect: dict) -> dict:
@@ -1070,7 +1206,10 @@ async def trim_post_rect_before_discussion_toolbar(page: Page, rect: dict) -> di
               (
                 item.text === 'Top' ||
                 item.text === 'View activity' ||
-                item.text.includes('View activity')
+                item.text === 'Hàng đầu' ||
+                item.text === 'Xem hoạt động' ||
+                item.text.includes('View activity') ||
+                item.text.includes('Xem hoạt động')
               )
             )
             .sort((a, b) => a.y - b.y);
@@ -1084,6 +1223,15 @@ async def trim_post_rect_before_discussion_toolbar(page: Page, rect: dict) -> di
         rect = dict(rect)
         rect["height"] = max(90, toolbar_y - rect["y"] - 4)
     return rect
+
+
+def screenshot_image_is_valid(path: Path) -> bool:
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except Exception:
+        return False
+    return width >= MIN_SCREENSHOT_BLOCK_WIDTH and height >= MIN_SCREENSHOT_BLOCK_HEIGHT
 
 
 async def screenshot_clip(page: Page, rect: dict, output_path: Path, padding: int = 8) -> bool:
@@ -1132,13 +1280,40 @@ async def screenshot_block(page: Page, block: dict, output_path: Path, padding: 
             await prepare_threads_page(page)
             await page.wait_for_timeout(250)
             await wait_for_element_media(page, handle)
+            rect = await refresh_block_box(block)
+            if rect.get("width", 0) < MIN_SCREENSHOT_BLOCK_WIDTH or rect.get("height", 0) < MIN_SCREENSHOT_BLOCK_HEIGHT:
+                log(f"Skipping too-small block before screenshot: rect={rect}")
+                return False
             await handle.screenshot(path=str(output_path), timeout=8000)
-            return True
+            if screenshot_image_is_valid(output_path):
+                return True
+            log(f"Skipping too-small screenshot after capture: path={output_path}")
+            return False
         except Exception as exc:
             log(f"Element screenshot failed, falling back to viewport clip: {exc}")
+            relinked = await find_current_matching_block(page, block)
+            if relinked:
+                block.update(relinked)
+                try:
+                    await wait_for_element_media(page, block["handle"])
+                    rect = await refresh_block_box(block)
+                    if rect.get("width", 0) < MIN_SCREENSHOT_BLOCK_WIDTH or rect.get("height", 0) < MIN_SCREENSHOT_BLOCK_HEIGHT:
+                        log(f"Skipping too-small relinked block: rect={rect}")
+                        return False
+                    await block["handle"].screenshot(path=str(output_path), timeout=8000)
+                    if screenshot_image_is_valid(output_path):
+                        return True
+                    log(f"Skipping too-small relinked screenshot after capture: path={output_path}")
+                    return False
+                except Exception as relink_exc:
+                    log(f"Relinked element screenshot failed: {relink_exc}")
 
     rect = await refresh_block_box(block)
-    return await screenshot_clip(page, rect, output_path, padding=padding)
+    if rect.get("width", 0) < MIN_SCREENSHOT_BLOCK_WIDTH or rect.get("height", 0) < MIN_SCREENSHOT_BLOCK_HEIGHT:
+        log(f"Skipping too-small block before clip screenshot: rect={rect}")
+        return False
+    captured = await screenshot_clip(page, rect, output_path, padding=padding)
+    return captured and screenshot_image_is_valid(output_path)
 
 
 async def screenshot_post_and_comments(
@@ -1285,6 +1460,9 @@ async def process_post(post_id: str, url: str, config: Config) -> dict:
         browser = await playwright.chromium.launch(**launch_kwargs)
         context_options = {
             "viewport": {"width": 1365, "height": 900},
+            "device_scale_factor": config.device_scale_factor,
+            "color_scheme": config.screenshot_theme,
+            "locale": "vi-VN",
             "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
@@ -1420,6 +1598,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--debug-dir", default=os.getenv("THREADS_DEBUG_DIR", "runtime/debug"))
     parser.add_argument("--screenshots-dir", default=os.getenv("SCREENSHOTS_DIR", "runtime/data/screenshots"))
     parser.add_argument(
+        "--screenshot-theme",
+        choices=["dark", "light"],
+        default=os.getenv("THREADS_SCREENSHOT_THEME", "dark").strip().lower(),
+    )
+    parser.add_argument(
+        "--device-scale-factor",
+        type=float,
+        default=float(os.getenv("THREADS_SCREENSHOT_DPR", "2")),
+    )
+    parser.add_argument(
         "--force-login",
         action="store_true",
         default=os.getenv("THREADS_FORCE_LOGIN", "").lower() in {"1", "true", "yes"},
@@ -1453,6 +1641,8 @@ def main() -> int:
         post_login_wait_ms=args.post_login_wait_ms,
         force_login=args.force_login,
         headless=not args.headful,
+        screenshot_theme=args.screenshot_theme,
+        device_scale_factor=max(1.0, min(3.0, args.device_scale_factor)),
     )
 
     try:

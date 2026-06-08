@@ -8,6 +8,7 @@ RUN apt-get update \
         fonts-noto-color-emoji \
         fonts-noto-core \
         fonts-noto-cjk \
+        espeak-ng \
         libasound2 \
         libatk-bridge2.0-0 \
         libatk1.0-0 \
@@ -28,7 +29,14 @@ RUN apt-get update \
 
 COPY runner/requirements.txt /tmp/requirements.txt
 
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential cargo rustc \
+    && pip install --no-cache-dir \
+        --extra-index-url https://pnnbao97.github.io/llama-cpp-python-v0.3.16/cpu/ \
+        -r /tmp/requirements.txt \
+    && apt-get purge -y --auto-remove build-essential cargo rustc \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m playwright install chromium
 
 WORKDIR /workspace
 

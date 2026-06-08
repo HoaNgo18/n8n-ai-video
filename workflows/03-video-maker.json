@@ -27,10 +27,10 @@
         "authentication": "serviceAccount",
         "documentId": {
           "__rl": true,
-          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
           "mode": "list",
-          "cachedResultName": "AI Workflow",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
         },
         "sheetName": {
           "__rl": true,
@@ -170,10 +170,10 @@
         "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
-          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
           "mode": "list",
-          "cachedResultName": "AI Workflow",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
         },
         "sheetName": {
           "__rl": true,
@@ -265,10 +265,10 @@
         "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
-          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
           "mode": "list",
-          "cachedResultName": "AI Workflow",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
         },
         "sheetName": {
           "__rl": true,
@@ -350,10 +350,10 @@
         "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
-          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
           "mode": "list",
-          "cachedResultName": "AI Workflow",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
         },
         "sheetName": {
           "__rl": true,
@@ -427,7 +427,7 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1840,
+        2736,
         1200
       ],
       "id": "ff657628-ca2e-4fb6-b608-6fe63a748f52",
@@ -444,10 +444,10 @@
         "authentication": "serviceAccount",
         "documentId": {
           "__rl": true,
-          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
           "mode": "list",
-          "cachedResultName": "AI Workflow",
-          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
         },
         "sheetName": {
           "__rl": true,
@@ -472,6 +472,88 @@
           "name": "Google Sheets account"
         }
       }
+    },
+    {
+      "parameters": {
+        "jsCode": "const env = (typeof process !== 'undefined' && process.env) ? process.env : {};\nconst enabledRaw = String(env.AI_CAPTION_ENABLED || env.CAPTION_REWRITE_ENABLED || 'true').trim().toLowerCase();\nconst enabled = ['1', 'true', 'yes', 'on'].includes(enabledRaw);\nconst model = String(env.AI_CAPTION_MODEL || env.SCRIPT_REWRITE_MODEL || 'gemini-2.5-flash-lite').trim();\nfunction cleanText(value) { return String(value || '').replace(/\\s+/g, ' ').trim(); }\nfunction parseJsonObject(value) { try { const parsed = JSON.parse(String(value || '').trim() || '{}'); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}; } catch (error) { return {}; } }\nfunction takeTexts(values, limit = 8) { const output = []; const seen = new Set(); for (const item of Array.isArray(values) ? values : []) { const raw = typeof item === 'string' ? item : (item && item.text); const text = cleanText(raw).slice(0, 500); const key = text.toLowerCase().replace(/[^0-9a-z\\u00c0-\\u1ef9]+/g, ''); if (!text || !key || seen.has(key)) continue; seen.add(key); output.push(text); if (output.length >= limit) break; } return output; }\nfor (const item of $input.all()) { const source = item.json; const extracted = parseJsonObject(source.Extracted_Content || ''); const script = cleanText(source.Narrator_Script || ''); const post = cleanText(extracted.post_text || ''); const segments = takeTexts(extracted.segments || [], 10); const comments = takeTexts(extracted.comments || [], 5); const fallbackCaption = cleanText(source.Caption || '') || 'Cau chuyen nay dang duoc ban luan tren Threads\\n\\n#threads #storytime #chuyencuocsong #xuhuong'; source._caption = { enabled, model, prompt: ['You are a Vietnamese TikTok caption strategist.', 'Read the narrator script and source context, then write a natural TikTok caption that teases the story without copying a random script segment.', 'The caption must be in Vietnamese, conversational, concise, and suitable for a story/discussion video sourced from Threads.', 'Do not invent facts. Do not mention AI, automation, screenshots, or internal workflow details.', 'Avoid generic ending questions like Ban nghi sao unless it truly fits the content.', 'Return valid JSON only with this schema: {\"caption\":\"...\",\"hashtags\":[\"#...\",\"#...\"]}.', 'Caption target: 1 to 3 short sentences, max 260 characters before hashtags.', 'Hashtags target: 4 to 7 hashtags. Use specific topic hashtags when clear, then add generic ones such as #threads #storytime #chuyencuocsong #xuhuong.'].join(' '), script, post, segments, comments, fallback_caption: fallbackCaption }; }\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        1200
+      ],
+      "id": "phase3-prepare-ai-caption",
+      "name": "Prepare AI Caption"
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json._caption.model ? 'models/' + $json._caption.model.replace(/^models\\//, '') : 'models/gemini-2.5-flash-lite' }}"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "user",
+              "content": "={{ $json._caption.prompt + '\\n\\nNARRATOR_SCRIPT:\\n' + ($json._caption.script || '(none)') + '\\n\\nPOST_TEXT:\\n' + ($json._caption.post || '(none)') + '\\n\\nSOURCE_SEGMENTS:\\n- ' + ((($json._caption.segments || []).length ? $json._caption.segments : ['(none)']).join('\\n- ')) + '\\n\\nCOMMENTS:\\n- ' + ((($json._caption.comments || []).length ? $json._caption.comments : ['(none)']).join('\\n- ')) + '\\n\\nFALLBACK_CAPTION:\\n' + ($json._caption.fallback_caption || '') + '\\n\\nReturn JSON only.' }}"
+            }
+          ]
+        },
+        "simplify": false,
+        "jsonOutput": true,
+        "builtInTools": {},
+        "options": {
+          "maxOutputTokens": 800,
+          "temperature": 0.65,
+          "topP": 0.9
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        2096,
+        1040
+      ],
+      "id": "phase3-gemini-ai-caption",
+      "name": "Gemini AI Caption Request",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "hudWq13w7XVtO8Q6",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        2320,
+        1200
+      ],
+      "id": "phase3-merge-ai-caption-result",
+      "name": "Merge AI Caption Result"
+    },
+    {
+      "parameters": {
+        "jsCode": "const DEFAULT_HASHTAGS = ['#threads', '#storytime', '#chuyencuocsong', '#xuhuong'];\nfunction cleanText(value) { return String(value || '').replace(/\\s+/g, ' ').trim(); }\nfunction stripMarkdown(value) { const fence = String.fromCharCode(96).repeat(3); let text = cleanText(value); if (text.toLowerCase().startsWith(fence + 'json')) text = text.slice(7); else if (text.startsWith(fence)) text = text.slice(3); if (text.endsWith(fence)) text = text.slice(0, -3); return text.trim(); }\nfunction parseJsonCandidate(text) { const cleaned = stripMarkdown(text); if (!cleaned) return null; const candidates = [cleaned]; const braceMatches = cleaned.match(/\\{[\\s\\S]*\\}/g) || []; candidates.push(...braceMatches); for (const candidate of candidates) { try { const parsed = JSON.parse(candidate); if (parsed && typeof parsed === 'object') return parsed; } catch (error) {} } return null; }\nfunction extractTextDeep(value, bucket = []) { if (typeof value === 'string') { const text = cleanText(value); if (text) bucket.push(text); return bucket; } if (!value || typeof value !== 'object') return bucket; if (Array.isArray(value)) { value.forEach((entry) => extractTextDeep(entry, bucket)); return bucket; } for (const key of ['caption', 'text', 'output', 'generatedText', 'content', 'message']) { if (typeof value[key] === 'string') bucket.push(value[key]); } Object.values(value).forEach((entry) => { if (entry && typeof entry === 'object') extractTextDeep(entry, bucket); }); return bucket; }\nfunction extractCaptionPayload(data) { const direct = data && typeof data === 'object' ? data : {}; if (typeof direct.caption === 'string') return direct; for (const text of extractTextDeep(direct, [])) { const parsed = parseJsonCandidate(text); if (parsed && typeof parsed.caption === 'string') return parsed; } return {}; }\nfunction normalizeCaption(value) { let text = cleanText(value).replace(/^caption\\s*:\\s*/i, '').replace(/[\"'_*~|]+/g, ' ').replace(/(^|\\s)#[^\\s#]+/g, ' '); text = cleanText(text); if (text.length > 320) text = cleanText(text.slice(0, 320).replace(/\\s+\\S*$/, '')); return text; }\nfunction normalizeHashtag(value) { let tag = cleanText(value).toLowerCase(); tag = tag.replace(/[.,;:!?()[\\]{}\"'_*~|]/g, ''); tag = tag.replace(/\\s+/g, ''); if (!tag) return ''; if (!tag.startsWith('#')) tag = '#' + tag; tag = tag.replace(/[^#0-9a-z_\\u00c0-\\u1ef9]/g, ''); return tag.length > 1 ? tag : ''; }\nfunction normalizeHashtags(values) { const raw = Array.isArray(values) ? values : String(values || '').split(/\\s+/); const result = []; const seen = new Set(); for (const value of [...raw, ...DEFAULT_HASHTAGS]) { const tag = normalizeHashtag(value); if (!tag || seen.has(tag)) continue; seen.add(tag); result.push(tag); if (result.length >= 7) break; } return result; }\nfor (const item of $input.all()) { const meta = item.json._caption || {}; const note = cleanText(item.json.Note || ''); const fallback = cleanText(meta.fallback_caption || item.json.Caption || ''); const disabled = !meta.enabled; const payload = extractCaptionPayload(item.json); const generatedCaption = normalizeCaption(payload.caption || ''); const hashtags = normalizeHashtags(payload.hashtags || payload.hashtag || ''); if (disabled) { item.json.Caption = fallback; item.json.Note = cleanText(note + ' | AI caption skipped: disabled by AI_CAPTION_ENABLED'); } else if (generatedCaption && generatedCaption.length >= 20) { item.json.Caption = (generatedCaption + '\\n\\n' + hashtags.join(' ')).slice(0, 900).trim(); item.json.Note = cleanText(note + ' | AI caption ready gemini=' + (meta.model || 'default')); } else { item.json.Caption = fallback; item.json.Note = cleanText(note + ' | AI caption fallback: empty Gemini caption gemini=' + (meta.model || 'default')); } delete item.json._caption; }\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2528,
+        1200
+      ],
+      "id": "phase3-finalize-ai-caption",
+      "name": "Finalize AI Caption"
     }
   ],
   "connections": {
@@ -572,7 +654,7 @@
       "main": [
         [
           {
-            "node": "Update Merge Row",
+            "node": "Prepare AI Caption",
             "type": "main",
             "index": 0
           }
@@ -611,6 +693,55 @@
           },
           {
             "node": "Pick Merge Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI Caption": {
+      "main": [
+        [
+          {
+            "node": "Gemini AI Caption Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge AI Caption Result",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Gemini AI Caption Request": {
+      "main": [
+        [
+          {
+            "node": "Merge AI Caption Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge AI Caption Result": {
+      "main": [
+        [
+          {
+            "node": "Finalize AI Caption",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize AI Caption": {
+      "main": [
+        [
+          {
+            "node": "Update Merge Row",
             "type": "main",
             "index": 0
           }

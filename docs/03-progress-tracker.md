@@ -14,6 +14,7 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
   - [x] Scrapes candidate Threads post URLs and writes new rows to Google Sheet tab `Threads`.
   - [x] Sets `Status = Pending`.
   - [x] Deduplicates by `ID` before appending.
+  - [x] Added AI classifier gate in the workflow so only `discussion` / `story_hot` candidates are appended to the sheet.
   - [x] Confirmed working in n8n on 2026-04-23.
 
 - [x] **Phase 2: Screenshot + Extract MVP**
@@ -38,19 +39,23 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
   - [x] Added mode `merge` for final audio/video mux.
   - [x] Consolidated Phase 3 into one workflow: `workflows/03-video-maker.json`
   - [x] Updated merge output to create a TikTok `Caption` and set `Status = Draft`.
+  - [x] Added Phase 3C Gemini caption finalization to generate a short TikTok caption and hashtags from `Narrator_Script` / `Extracted_Content`, with the runner caption as fallback.
   - [ ] Add `Audio_Path`, `Visual_Video_Path`, `Caption`, `Admin_Decision`, and `TikTok_Publish_ID` columns in Google Sheet.
   - [ ] Import the updated Phase 3 workflow into n8n.
   - [ ] Confirm successful end-to-end Phase 3 run in n8n.
 
-- [x] **Phase 4: Admin Review + Manual Upload MVP**
-  - [x] Workflow: `workflows/04-auto-publisher.json`
-  - [x] Convert `Draft + Admin_Decision=approve` to `Ready To Upload`.
+- [x] **Phase 4: Admin Review + Auto Publish MVP**
+  - [x] Active n8n workflow: `Phase 4 - Review and Publish v2` (`jIwgeCiSLUefvteg`)
+  - [x] Upload `Draft` videos to Drive for review and write `Draft_Video_URL`.
+  - [x] Convert `Draft + Admin_Decision=approve` to `Approved`.
   - [x] Convert `Draft + Admin_Decision=reject` to `Rejected`.
-  - [x] Confirm manual TikTok upload when `Published_URL` is filled in the sheet.
-  - [x] Update `Published_URL`, `Status`, and `Note`.
-  - [ ] Import the Phase 4 workflow into n8n.
-  - [ ] Add final manual-upload helper columns if desired (`Uploaded_At`, `Upload_Note`).
-  - [ ] Confirm successful end-to-end manual upload flow.
+  - [x] Auto-publish approved rows through the Phase 4 publisher endpoint.
+  - [x] Keep `Status` to durable states only; publish-start progress is recorded in `Note` instead of a transient `Publishing` status.
+  - [x] Switch TikTok publishing from Content Posting API to browser/cookie uploader mode.
+  - [x] Update `TikTok_Publish_ID`, `Published_URL`, `Status`, and `Note`.
+  - [x] Import the Phase 4 workflow into n8n as `Phase 4 - Review and Publish v2`.
+  - [x] Remove stale local Phase 4 exports to avoid importing the old polling/callback workflow.
+  - [ ] Confirm successful end-to-end browser upload after TikTok cookies/session are provided.
 
 ## Improvement Notes
 
@@ -61,6 +66,7 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
 - Language detection currently uses Vietnamese diacritics. Later improvement: use Gemini or a lightweight language detector so non-diacritic Vietnamese is not missed.
 - Ranking is not yet true "viral ranking"; it collects visible feed candidates. Later improvement: sort/filter by engagement metrics.
 - Phase 1 now estimates engagement from visible numeric clusters and filters by `MIN_ENGAGEMENT_SCORE`. Later improvement: parse exact like/comment/repost/share labels from a more stable source.
+- Phase 1 now also uses a Gemini classifier on top of heuristic filters. Later improvement: persist AI label and confidence into dedicated sheet columns instead of packing them into `Note`.
 - Session handling is basic. `THREADS_FORCE_LOGIN=true` can refresh login manually. Later improvement: detect invalid sessions automatically and retry login once.
 - n8n Code node requires `NODE_FUNCTION_ALLOW_BUILTIN=*` because it calls Python via Node `child_process`. Later improvement: move Python calls to a local HTTP microservice or restore Execute Command if the n8n install supports it.
 - `Collected_At` depends on n8n timezone. Verify n8n timezone if timestamps look off.
@@ -90,7 +96,7 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
 - Each screenshot slot is timed sequentially with a bounded first-post window so the post cannot dominate nearly the whole video before comments appear.
 - Screenshot overlays now scale to full video width and sit higher on screen instead of vertically centered.
 - `03B` renders a silent visual video with `preset=veryfast` and `fps=24` to reduce task-runner timeout risk.
-- `03C` muxes audio + visual, creates `Caption`, and sets `Status = Draft` so admin approval can happen before publishing.
+- `03C` muxes audio + visual, creates a fallback `Caption`, runs AI caption finalization when enabled, and sets `Status = Draft` so admin approval can happen before publishing.
 - Phase 2 can optionally rewrite the temporary narration script through an AI provider before TTS when `SCRIPT_REWRITE_ENABLED=true`.
 - Later improvement: use a paid Vietnamese TTS provider with better voice consistency and fewer network failures.
 - Later improvement: animate post/comment screenshots with smoother timed reveals, scale transitions, and safe-area checks.

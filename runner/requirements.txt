@@ -3,6 +3,12 @@ uvicorn[standard]
 python-dotenv
 playwright
 requests
+tiktok-uploader
 gTTS
 edge-tts
+vieneu==3.0.4
+yt-dlp
 imageio-ffmpeg
+Pillow
+google-api-python-client
+google-auth

@@ -128,7 +128,7 @@ Current status: balanced Phase 4 workflow implemented in n8n, with noisy helper 
 Current n8n workflows:
 
 - `Phase 4 - Review and Publish v2` (`jIwgeCiSLUefvteg`): visible review, approval callback, and publish branches.
-- Old/split Phase 4 workflows and stale local exports were removed to avoid duplicate callbacks or accidental re-imports.
+- Local export: `workflows/04-review&publish.json`.
 
 Runner code:
 

@@ -1,0 +1,1703 @@
+{
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "phase4v2-manual",
+      "name": "Manual Tick Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        128,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "phase4v2-read",
+      "name": "Read Threads Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        368,
+        304
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "for (const item of $input.all()) {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const videoPath = String(item.json.Video_Path || '').trim();\n  const caption = String(item.json.Caption || '').trim();\n  const draftUrl = String(item.json.Draft_Video_URL || '').trim();\n  const publishId = String(item.json.TikTok_Publish_ID || '').trim();\n\n  if (status === 'draft' && videoPath && caption && !draftUrl) {\n    return [{\n      json: {\n        action: 'create_review',\n        ID: item.json.ID,\n        Video_Path: item.json.Video_Path,\n        Caption: item.json.Caption,\n      },\n    }];\n  }\n\n  if (status === 'approved' && videoPath && caption && !publishId) {\n    return [{\n      json: {\n        action: 'publish',\n        ID: item.json.ID,\n        Video_Path: item.json.Video_Path,\n        Caption: item.json.Caption,\n      },\n    }];\n  }\n}\n\nreturn [{ json: { action: 'idle', Note: 'Phase 4: no eligible row found' } }];"
+      },
+      "id": "phase4v2-pick",
+      "name": "Pick Phase 4 Action",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "expression",
+        "output": "={{ $json.action === 'create_review' ? 0 : $json.action === 'publish' ? 1 : 2 }}"
+      },
+      "id": "phase4v2-route",
+      "name": "Route Phase 4 Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        848,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst videoPath = String(item.Video_Path || '').trim();\nconst baseName = videoPath.split(/[\\\\/]/).pop() || 'final.mp4';\nconst readFilePath = videoPath.replace(/^\\/workspace\\/runtime\\//, '/home/node/.n8n-files/runtime/');\nreturn [{\n  json: {\n    ...item,\n    Drive_File_Name: 'phase4_draft_' + item.ID + '_' + baseName,\n    Read_File_Path: readFilePath,\n  },\n}];"
+      },
+      "id": "phase4v2-drive-meta",
+      "name": "Prepare Drive Draft Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "={{ $json.Read_File_Path }}",
+        "options": {
+          "fileName": "={{ $json.Drive_File_Name }}",
+          "mimeType": "video/mp4",
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "phase4v2-read-file",
+      "name": "Read Draft Video File",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        1328,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "name": "={{ $('Prepare Drive Draft Metadata').item.json.Drive_File_Name }}",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $env.DRAFT_REVIEW_DRIVE_FOLDER_ID }}",
+          "mode": "id",
+          "cachedResultName": "DRAFT_REVIEW_DRIVE_FOLDER_ID",
+          "cachedResultUrl": ""
+        },
+        "options": {
+          "simplifyOutput": true
+        }
+      },
+      "id": "phase4v2-upload-drive",
+      "name": "Upload Draft Video To Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1568,
+        128
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "7I5EArRAZjEAoLYU",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "share",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $('Upload Draft Video To Drive').item.json.id }}",
+          "mode": "id"
+        },
+        "permissionsUi": {
+          "permissionsValues": {
+            "role": "reader",
+            "type": "anyone"
+          }
+        },
+        "options": {}
+      },
+      "id": "phase4v2-share-drive",
+      "name": "Share Draft Video Link",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1808,
+        128
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "7I5EArRAZjEAoLYU",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const upload = $('Upload Draft Video To Drive').item.json;\nconst source = $('Prepare Drive Draft Metadata').item.json;\nconst fileId = String(upload.id || upload.fileId || '').trim();\nif (!fileId) {\n  throw new Error('Google Drive upload did not return a file id');\n}\nconst draftUrl = String(upload.webViewLink || '').trim() || ('https://drive.google.com/file/d/' + fileId + '/view');\n\nreturn [{\n  json: {\n    ID: source.ID,\n    Video_Path: source.Video_Path,\n    Caption: source.Caption,\n    Draft_Video_URL: draftUrl,\n    Draft_Drive_File_ID: fileId,\n    Status: 'Draft',\n    Note: 'Phase 4: draft uploaded to Drive and sent to Telegram for review',\n  },\n}];"
+      },
+      "id": "phase4v2-review-result",
+      "name": "Prepare Draft Review Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2048,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"https://api.telegram.org/bot\" + $env.TELEGRAM_BOT_TOKEN + \"/sendMessage\" }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { chat_id: $env.TELEGRAM_CHAT_ID, text: ['Phase 4 draft ready for review', '', 'ID: ' + $json.ID, 'Draft: ' + $json.Draft_Video_URL, '', 'Caption:', String($json.Caption || '').slice(0, 900), '', 'Choose an admin decision below.'].join('\\n'), disable_web_page_preview: false, reply_markup: { inline_keyboard: [[ { text: 'Approve', callback_data: 'phase4|approve|' + $json.ID }, { text: 'Reject', callback_data: 'phase4|reject|' + $json.ID } ], [ { text: 'Open Draft', url: $json.Draft_Video_URL } ]] } } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "phase4v2-send-telegram",
+      "name": "Send Telegram Review Link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2288,
+        48
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "Video_Path": "={{ $json.Video_Path }}",
+            "Caption": "={{ $json.Caption }}",
+            "Draft_Video_URL": "={{ $json.Draft_Video_URL }}",
+            "Draft_Drive_File_ID": "={{ $json.Draft_Drive_File_ID }}",
+            "Status": "={{ $json.Status }}",
+            "Note": "={{ $json.Note }}"
+          },
+          "matchingColumns": [
+            "ID"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "phase4v2-update-review",
+      "name": "Update Draft Review Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2288,
+        208
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "Status": "Approved",
+            "Note": "Phase 4: publish started"
+          },
+          "matchingColumns": [
+            "ID"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "phase4v2-mark",
+      "name": "Mark Publishing Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1104,
+        320
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/phase4/publish",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { id: $('Pick Phase 4 Action').item.json.ID, video_path: $('Pick Phase 4 Action').item.json.Video_Path, caption: $('Pick Phase 4 Action').item.json.Caption } }}",
+        "options": {
+          "timeout": 1200000
+        }
+      },
+      "id": "phase4v2-publish",
+      "name": "Auto Publish TikTok",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1328,
+        320
+      ],
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 30000
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "Status": "={{ $json.Status }}",
+            "TikTok_Publish_ID": "={{ $json.TikTok_Publish_ID }}",
+            "Published_URL": "={{ $json.Published_URL }}",
+            "Note": "={{ $json.Note }}"
+          },
+          "matchingColumns": [
+            "ID"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "phase4v2-update-publish",
+      "name": "Update Publish Result Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1568,
+        320
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "phase4-review-callback",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "phase4v2-webhook",
+      "name": "Telegram Callback Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        128,
+        640
+      ],
+      "webhookId": "phase4-review-callback"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/phase4/compact",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { mode: 'telegram_callback', update: $json.body || $json } }}",
+        "options": {
+          "timeout": 1200000
+        }
+      },
+      "id": "phase4v2-save-decision",
+      "name": "Save Admin Decision + Ack Telegram",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        368,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "callback-approved",
+              "leftValue": "={{ $json.decision }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "phase4v2-callback-route",
+      "name": "Callback Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        608,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "phase4v2-read-after-callback",
+      "name": "Read Sheet After Callback",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        864,
+        624
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const decision = $('Save Admin Decision + Ack Telegram').item.json;\nconst approvedId = String(decision.id || '').trim();\nif (!approvedId) {\n  throw new Error('Approved callback did not return a row ID');\n}\n\nfor (const item of $input.all()) {\n  const id = String(item.json.ID || '').trim();\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const videoPath = String(item.json.Video_Path || '').trim();\n  const caption = String(item.json.Caption || '').trim();\n  const publishId = String(item.json.TikTok_Publish_ID || '').trim();\n  if (id !== approvedId) continue;\n  if (status !== 'approved') continue;\n  if (!videoPath || !caption || publishId) continue;\n\n  return [{\n    json: {\n      ID: item.json.ID,\n      Video_Path: item.json.Video_Path,\n      Caption: item.json.Caption,\n    },\n  }];\n}\n\nreturn [{ json: { ID: approvedId, Status: 'Publish Failed', Note: 'Phase 4: approved row was not publishable after callback' } }];"
+      },
+      "id": "phase4v2-pick-callback-publish",
+      "name": "Pick Callback Publish Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "Status": "Approved",
+            "Note": "Phase 4: publish started from Telegram approval"
+          },
+          "matchingColumns": [
+            "ID"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "phase4v2-mark-callback-publish",
+      "name": "Mark Callback Publishing Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1328,
+        624
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/phase4/publish",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { id: $('Pick Callback Publish Row').item.json.ID, video_path: $('Pick Callback Publish Row').item.json.Video_Path, caption: $('Pick Callback Publish Row').item.json.Caption } }}",
+        "options": {
+          "timeout": 1200000
+        }
+      },
+      "id": "phase4v2-callback-publish",
+      "name": "Auto Publish TikTok From Callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1568,
+        624
+      ],
+      "retryOnFail": true,
+      "maxTries": 1,
+      "waitBetweenTries": 30000
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "Status": "={{ $json.Status }}",
+            "TikTok_Publish_ID": "={{ $json.TikTok_Publish_ID }}",
+            "Published_URL": "={{ $json.Published_URL }}",
+            "Note": "={{ $json.Note }}"
+          },
+          "matchingColumns": [
+            "ID"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "phase4v2-update-callback-publish",
+      "name": "Update Callback Publish Result Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1792,
+        624
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Tick Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Threads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Threads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Pick Phase 4 Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Phase 4 Action": {
+      "main": [
+        [
+          {
+            "node": "Route Phase 4 Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Phase 4 Action": {
+      "main": [
+        [
+          {
+            "node": "Prepare Drive Draft Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Publishing Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Prepare Drive Draft Metadata": {
+      "main": [
+        [
+          {
+            "node": "Read Draft Video File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Draft Video File": {
+      "main": [
+        [
+          {
+            "node": "Upload Draft Video To Drive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Draft Video To Drive": {
+      "main": [
+        [
+          {
+            "node": "Share Draft Video Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Share Draft Video Link": {
+      "main": [
+        [
+          {
+            "node": "Prepare Draft Review Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Draft Review Result": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Review Link",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Draft Review Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Publishing Row": {
+      "main": [
+        [
+          {
+            "node": "Auto Publish TikTok",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto Publish TikTok": {
+      "main": [
+        [
+          {
+            "node": "Update Publish Result Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Callback Webhook": {
+      "main": [
+        [
+          {
+            "node": "Save Admin Decision + Ack Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Admin Decision + Ack Telegram": {
+      "main": [
+        [
+          {
+            "node": "Callback Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Callback Approved?": {
+      "main": [
+        [
+          {
+            "node": "Read Sheet After Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Sheet After Callback": {
+      "main": [
+        [
+          {
+            "node": "Pick Callback Publish Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Callback Publish Row": {
+      "main": [
+        [
+          {
+            "node": "Mark Callback Publishing Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Callback Publishing Row": {
+      "main": [
+        [
+          {
+            "node": "Auto Publish TikTok From Callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto Publish TikTok From Callback": {
+      "main": [
+        [
+          {
+            "node": "Update Callback Publish Result Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "e965c1161c5d66f2fabbe81680366123a2d2bc8401947f197a7c26514812ef19"
+  }
+}

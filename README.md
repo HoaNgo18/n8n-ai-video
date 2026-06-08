@@ -121,9 +121,10 @@ Current local exports include:
 workflows/01-threads-miner.json
 workflows/02-screenshot-extract.json
 workflows/03-video-maker.json
+workflows/04-review&publish.json
 ```
 
-Phase 4 is currently managed in n8n with the runner helper endpoints. Export the active Phase 4 workflow again before deploying to a new n8n instance.
+Phase 4 uses the runner helper endpoints plus Google Drive and Telegram nodes for review/publish callbacks.
 
 ## Google Sheet
 
@@ -291,4 +292,3 @@ Do not commit:
 - `runtime/data/`
 - generated screenshots, audio, video, or cache files
 - downloaded background videos
-

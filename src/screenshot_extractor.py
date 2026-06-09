@@ -257,6 +257,38 @@ def strip_threads_context_noise(text: str) -> str:
     return clean_text(text)
 
 
+def strip_embedded_attachment_text(text: str) -> str:
+    """Drop quoted/media-card text that Threads includes inside the parent post block."""
+    text = clean_text(text)
+    if not text:
+        return ""
+
+    media_markers = (
+        "More videos",
+        "CC",
+        "Watch more",
+    )
+    marker_positions = [text.find(marker) for marker in media_markers if marker in text]
+    if marker_positions:
+        text = text[: min(pos for pos in marker_positions if pos >= 0)]
+
+    nested_author_match = re.search(
+        rf"\s@?(?=[A-Za-z0-9_.]*[0-9_])[A-Za-z0-9_]{{3,}}(?:[._][A-Za-z0-9_]+)*\s+\d+\s*{THREADS_TIME_UNIT_RE}\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not nested_author_match:
+        nested_author_match = re.search(
+            r"\s@?(?=[A-Za-z0-9_.]*[0-9_])[A-Za-z0-9_]{3,}(?:[._][A-Za-z0-9_]+)*\s+\d+\s+[^\W\d_]{1,12}\b",
+            text,
+            flags=re.IGNORECASE | re.UNICODE,
+        )
+    if nested_author_match and nested_author_match.start() > 20:
+        text = text[: nested_author_match.start()]
+
+    return clean_text(text)
+
+
 def is_vietnamese(text: str) -> bool:
     return bool(VIET_PATTERN.search(text or ""))
 
@@ -480,11 +512,12 @@ def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
     text = re.sub(r"\bReply\s+to\s+[A-Za-z0-9_.-]+\.{0,3}", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\bTranslate\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"(?<!\d)\b\d+\s*/\s*\d+\b(?!\d)", " ", text)
-    text = re.sub(r"\b\d+\s*[smhdw]\b", " ", text, flags=re.IGNORECASE)
     text = strip_threads_context_noise(text)
     text = strip_trailing_metrics(text)
     text = strip_threads_context_noise(text)
     text = strip_leading_handle_and_time(text)
+    text = strip_embedded_attachment_text(text)
+    text = re.sub(r"\b\d+\s*[smhdw]\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"^\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?[\s:.,;-]*", " ", text)
     text = clean_text(text)
 
@@ -1069,6 +1102,36 @@ def is_reasonable_pressable(block: dict) -> bool:
     return not any(fragment.lower() in text.lower() for fragment in noise)
 
 
+def rect_document_top(rect: dict) -> float:
+    return float(rect.get("document_y", rect.get("y", 0)) or 0)
+
+
+def rect_document_bottom(rect: dict) -> float:
+    return rect_document_top(rect) + float(rect.get("height", 0) or 0)
+
+
+def is_nested_pressable_inside(parent_block: dict, child_block: dict, margin: float = 18.0) -> bool:
+    """Threads exposes embedded media/cards as nested pressable blocks; keep them in the post screenshot only."""
+    parent_rect = parent_block.get("rect", {}) or {}
+    child_rect = child_block.get("rect", {}) or {}
+    parent_top = rect_document_top(parent_rect)
+    parent_bottom = rect_document_bottom(parent_rect)
+    child_top = rect_document_top(child_rect)
+    child_bottom = rect_document_bottom(child_rect)
+    parent_width = float(parent_rect.get("width", 0) or 0)
+    child_width = float(child_rect.get("width", 0) or 0)
+
+    if parent_bottom <= parent_top or child_bottom <= child_top:
+        return False
+    if child_top <= parent_top + margin:
+        return False
+    if child_bottom >= parent_bottom - margin:
+        return False
+    if parent_width and child_width > parent_width + margin:
+        return False
+    return True
+
+
 def choose_post_and_comments(
     blocks: list[dict],
     post_author: str,
@@ -1103,6 +1166,8 @@ def choose_post_and_comments(
         rect = block.get("rect", {})
         text_key = text[:180]
         if not text or text_key in seen:
+            continue
+        if is_nested_pressable_inside(post_block, block):
             continue
         if rect.get("y", 0) < post_bottom - 30:
             continue
@@ -1354,6 +1419,8 @@ async def screenshot_post_and_comments(
                 text = clean_text(block.get("text", ""))
                 key = text[:180]
                 if not text or key == post_key or key in accumulated_keys:
+                    continue
+                if is_nested_pressable_inside(active_post_block, block):
                     continue
                 if not is_vietnamese(text):
                     continue

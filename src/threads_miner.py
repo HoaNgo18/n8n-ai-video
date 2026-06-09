@@ -71,10 +71,29 @@ DISCUSSION_KEYWORDS = (
     "thao luan", "muon nghe", "xin y kien", "drama", "red flag", "toxic",
 )
 HOT_TOPIC_KEYWORDS = (
-    "gia nha", "bat dong san", "chung cu", "nong len", "mat dien",
-    "gia vang", "lam phat", "kinh te", "chinh tri", "xa hoi",
-    "luong", "that nghiep", "thue", "hoc phi", "benh vien",
-    "giao thong", "tai nan", "viral", "dang hot",
+    "gia nha", "bat dong san", "chung cu", "thue nha", "mua nha",
+    "nong len", "mat dien", "gia vang", "lam phat", "kinh te",
+    "chinh tri", "xa hoi", "luong", "that nghiep", "thue",
+    "hoc phi", "benh vien", "giao thong", "tai nan", "viral",
+    "dang hot", "gia xang", "xang", "quy hoach", "do thi",
+    "ha noi", "sai gon", "tp hcm", "dao duong", "sua duong",
+    "pha duong", "ket xe", "tac duong", "metro", "vanh dai",
+    "truyen ma", "tam linh", "ma quy", "nha ma", "kinh di",
+)
+MASS_APPEAL_KEYWORDS = (
+    "tien", "gia", "nha", "xang", "dien", "nuoc", "duong", "xe",
+    "luong", "viec lam", "that nghiep", "hoc", "benh", "cuoi",
+    "ly hon", "con cai", "phu huynh", "hang xom", "cong ty",
+    "sep", "dong nghiep", "phap luat", "quy dinh", "chinh sach",
+    "ha noi", "sai gon", "tp hcm", "chung cu", "dat dai",
+)
+NICHE_COMMUNITY_KEYWORDS = (
+    "idol", "fandom", "fan", "comeback", "concert", "bias", "ship",
+    "fl", "follower", "mua fl", "stream", "vote", "album", "lightstick",
+)
+SOFT_PERSONAL_ADVICE_KEYWORDS = (
+    "podcast", "networking", "personal branding", "marketing agency",
+    "hanh trinh", "truyen cam hung", "kinh nghiem ca nhan",
 )
 STORY_STRONG_KEYWORDS = (
     "cau chuyen", "chuyen nay", "xong roi", "ket qua la",
@@ -185,6 +204,18 @@ def normalize_search_text(text: str) -> str:
     return re.sub(r"\s+", " ", ascii_text).strip()
 
 
+def env_keyword_terms(name: str) -> list[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    terms = []
+    for item in re.split(r"[,;\n]+", raw):
+        normalized = normalize_search_text(item)
+        if normalized:
+            terms.append(normalized)
+    return terms
+
+
 def classify_preview_text(text: str) -> str | None:
     normalized = normalize_search_text(text)
     if not normalized:
@@ -206,10 +237,14 @@ def assess_content_fit(text: str) -> dict:
         return {"score": 0, "tags": [], "reason": "empty content"}
 
     discussion_hits = [k for k in DISCUSSION_KEYWORDS if k in normalized]
+    priority_hits = [k for k in env_keyword_terms("THREADS_PRIORITY_TOPICS") if k in normalized]
     topic_hits = [k for k in HOT_TOPIC_KEYWORDS if k in normalized]
+    mass_hits = [k for k in MASS_APPEAL_KEYWORDS if k in normalized]
     strong_story_hits = [k for k in STORY_STRONG_KEYWORDS if k in normalized]
     weak_story_hits = [k for k in STORY_WEAK_KEYWORDS if k in normalized]
     low_signal_hits = [k for k in LOW_SIGNAL_KEYWORDS if k in normalized]
+    niche_hits = [k for k in NICHE_COMMUNITY_KEYWORDS if k in normalized]
+    soft_personal_hits = [k for k in SOFT_PERSONAL_ADVICE_KEYWORDS if k in normalized]
 
     sentence_count = len([p for p in re.split(r"[.!?\n]+", text) if p.strip()])
     word_count = len(normalized.split())
@@ -232,9 +267,15 @@ def assess_content_fit(text: str) -> dict:
     elif len(weak_story_hits) >= 2:
         score += 1
         tags.append("story-weak")
+    if priority_hits:
+        score += min(4, 2 + len(priority_hits))
+        tags.append("priority-topic")
     if topic_hits:
-        score += min(2, len(topic_hits))
+        score += min(3, len(topic_hits))
         tags.append("topic-hot")
+    if mass_hits:
+        score += min(2, len(mass_hits))
+        tags.append("mass-appeal")
     if has_question:
         score += 1
         tags.append("question")
@@ -244,11 +285,27 @@ def assess_content_fit(text: str) -> dict:
     if low_signal_hits:
         score -= min(2, len(low_signal_hits))
         tags.append("low-signal")
+    if niche_hits and not (priority_hits or topic_hits or mass_hits):
+        score -= min(3, len(niche_hits))
+        tags.append("niche-community")
+    if soft_personal_hits and not (discussion_hits or priority_hits or topic_hits):
+        score -= min(2, len(soft_personal_hits))
+        tags.append("soft-personal")
 
     return {
         "score": score,
         "tags": tags,
-        "reason": ",".join(discussion_hits[:2] + topic_hits[:2] + strong_story_hits[:2] + weak_story_hits[:1] + low_signal_hits[:1]),
+        "reason": ",".join(
+            priority_hits[:3]
+            + topic_hits[:2]
+            + mass_hits[:2]
+            + discussion_hits[:2]
+            + strong_story_hits[:2]
+            + weak_story_hits[:1]
+            + niche_hits[:1]
+            + soft_personal_hits[:1]
+            + low_signal_hits[:1]
+        ),
     }
 
 

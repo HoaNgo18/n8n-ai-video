@@ -10,27 +10,17 @@ Modes:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
-import time
-import wave
 from datetime import datetime
 from pathlib import Path
 
-import requests
 from dotenv import load_dotenv
-from gtts import gTTS
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
-
-try:
-    import edge_tts
-except ImportError:  # pragma: no cover
-    edge_tts = None
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -50,33 +40,48 @@ DEFAULT_AUDIO_DIR = "runtime/data/audio"
 DEFAULT_VISUALS_DIR = "runtime/data/visuals"
 DEFAULT_VIDEOS_DIR = "runtime/data/videos"
 DEFAULT_TEMP_DIR = "runtime/data/temp"
-DEFAULT_TTS_VOICE = "vi-VN-HoaiMyNeural"
+DEFAULT_BACKGROUND_MUSIC_DIR = "runtime/assets/music/lofi"
+DEFAULT_TTS_VOICE = ""
 DEFAULT_DISCUSSION_VOICES: list[str] = []
 DEFAULT_AUTHOR_VOICES: list[str] = []
-DEFAULT_EDGE_TTS_RATE = "+12%"
-FPT_TTS_URL = "https://api.fpt.ai/hmi/tts/v5"
-OVERLAY_TOP_RATIO = float(os.getenv("OVERLAY_TOP_RATIO", "0.5"))
-OVERLAY_WIDTH_RATIO = max(0.55, min(0.95, float(os.getenv("OVERLAY_WIDTH_RATIO", "0.82"))))
+DEFAULT_TTS_ENGINE_ORDER = "vieneu"
+OVERLAY_TOP_RATIO = float(os.getenv("OVERLAY_TOP_RATIO", "0.24"))
+OVERLAY_WIDTH_RATIO = max(0.55, min(1.0, float(os.getenv("OVERLAY_WIDTH_RATIO", "0.98"))))
 OVERLAY_CORNER_RADIUS_RATIO = max(
     0.01,
     min(0.12, float(os.getenv("OVERLAY_CORNER_RADIUS_RATIO", "0.035"))),
 )
 OVERLAY_SHADOW_OPACITY = max(0, min(255, int(os.getenv("OVERLAY_SHADOW_OPACITY", "105"))))
+OVERLAY_ANIMATION = os.getenv("OVERLAY_ANIMATION", "fade_slide").strip().lower() or "fade_slide"
+OVERLAY_ANIMATION_SECONDS = max(0.0, min(1.2, float(os.getenv("OVERLAY_ANIMATION_SECONDS", "0.35"))))
+OVERLAY_SLIDE_PIXELS = max(0, min(180, int(os.getenv("OVERLAY_SLIDE_PIXELS", "56"))))
 VIDEO_ENCODE_PRESET = os.getenv("VIDEO_ENCODE_PRESET", "medium").strip() or "medium"
-VIDEO_CRF = os.getenv("VIDEO_CRF", "18").strip() or "18"
-VIDEO_TARGET_BITRATE = os.getenv("VIDEO_TARGET_BITRATE", "8M").strip() or "8M"
-VIDEO_MAXRATE = os.getenv("VIDEO_MAXRATE", "10M").strip() or "10M"
-VIDEO_BUFSIZE = os.getenv("VIDEO_BUFSIZE", "20M").strip() or "20M"
+VIDEO_CRF = os.getenv("VIDEO_CRF", "16").strip() or "16"
+VIDEO_TARGET_BITRATE = os.getenv("VIDEO_TARGET_BITRATE", "14M").strip() or "14M"
+VIDEO_MAXRATE = os.getenv("VIDEO_MAXRATE", "18M").strip() or "18M"
+VIDEO_BUFSIZE = os.getenv("VIDEO_BUFSIZE", "36M").strip() or "36M"
 AUDIO_BITRATE = os.getenv("AUDIO_BITRATE", "192k").strip() or "192k"
 BACKGROUND_VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm"}
 BACKGROUND_VIDEO_PICK = os.getenv("BACKGROUND_VIDEO_PICK", "hash").strip().lower() or "hash"
+BACKGROUND_MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+BACKGROUND_MUSIC_ENABLED = str(os.getenv("BACKGROUND_MUSIC_ENABLED", "false")).strip().lower() in {"1", "true", "yes"}
+BACKGROUND_MUSIC_DIR = os.getenv("BACKGROUND_MUSIC_DIR", DEFAULT_BACKGROUND_MUSIC_DIR).strip() or DEFAULT_BACKGROUND_MUSIC_DIR
+BACKGROUND_MUSIC_PATH = os.getenv("BACKGROUND_MUSIC_PATH", "").strip()
+BACKGROUND_MUSIC_PICK = os.getenv("BACKGROUND_MUSIC_PICK", "hash").strip().lower() or "hash"
+BACKGROUND_MUSIC_VOLUME = max(0.0, min(1.0, float(os.getenv("BACKGROUND_MUSIC_VOLUME", "0.08"))))
+BACKGROUND_MUSIC_FADE_SECONDS = max(0.0, min(6.0, float(os.getenv("BACKGROUND_MUSIC_FADE_SECONDS", "1.5"))))
+BACKGROUND_MUSIC_START_OFFSET_SECONDS = max(0.0, float(os.getenv("BACKGROUND_MUSIC_START_OFFSET_SECONDS", "0.0")))
+BACKGROUND_MUSIC_DUCKING = str(os.getenv("BACKGROUND_MUSIC_DUCKING", "true")).strip().lower() in {"1", "true", "yes"}
 MAX_OVERLAY_IMAGES = 40
-VISUAL_TIMING_LEAD_SECONDS = float(os.getenv("VISUAL_TIMING_LEAD_SECONDS", "2.0"))
+VISUAL_TIMING_LEAD_SECONDS = float(os.getenv("VISUAL_TIMING_LEAD_SECONDS", "0.0"))
 AUDIO_TRIM_SEGMENT_SILENCE = str(os.getenv("AUDIO_TRIM_SEGMENT_SILENCE", "false")).strip().lower() in {"1", "true", "yes"}
 AUDIO_SILENCE_THRESHOLD_DB = os.getenv("AUDIO_SILENCE_THRESHOLD_DB", "-45dB")
 AUDIO_LEADING_SILENCE_SECONDS = float(os.getenv("AUDIO_LEADING_SILENCE_SECONDS", "0.08"))
 AUDIO_TRAILING_SILENCE_SECONDS = float(os.getenv("AUDIO_TRAILING_SILENCE_SECONDS", "0.18"))
 AUDIO_SEGMENT_OVERLAP_SECONDS = max(0.0, float(os.getenv("AUDIO_SEGMENT_OVERLAP_SECONDS", "0.15")))
+AUDIO_MAX_SEGMENTS = max(0, int(os.getenv("AUDIO_MAX_SEGMENTS", "7")))
+AUDIO_MAX_POST_CHARS = max(80, int(os.getenv("AUDIO_MAX_POST_CHARS", "220")))
+AUDIO_MAX_COMMENT_CHARS = max(80, int(os.getenv("AUDIO_MAX_COMMENT_CHARS", "260")))
 VIENEU_TTS_ENABLED = str(os.getenv("VIENEU_TTS_ENABLED", "false")).strip().lower() in {"1", "true", "yes"}
 VIENEU_MODE = os.getenv("VIENEU_MODE", "standard").strip() or "standard"
 VIENEU_BACKBONE_REPO = os.getenv("VIENEU_BACKBONE_REPO", "").strip()
@@ -87,6 +92,8 @@ VIENEU_VOICE_REF = os.getenv("VIENEU_VOICE_REF", "").strip()
 VIENEU_VOICE_REF_TEXT = os.getenv("VIENEU_VOICE_REF_TEXT", "").strip()
 _VIENEU_CLIENT = None
 _VIENEU_VOICE = None
+_VIENEU_VOICE_CACHE: dict[str, object | None] = {}
+VIENEU_REFERENCE_EXTENSIONS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".aac"}
 
 
 def log(message: str) -> None:
@@ -105,6 +112,19 @@ def decode_cli_text(value: str | None) -> str:
         except json.JSONDecodeError:
             pass
     return raw
+
+
+def tts_engine_order() -> list[str]:
+    raw = os.getenv("TTS_ENGINE_ORDER", DEFAULT_TTS_ENGINE_ORDER)
+    for item in str(raw or "").split(","):
+        engine = item.strip().lower()
+        if not engine:
+            continue
+        if engine != "vieneu":
+            log(f"Ignoring non-VieNeu TTS engine in TTS_ENGINE_ORDER: {engine}")
+            continue
+        return ["vieneu"]
+    return ["vieneu"]
 
 
 def resolve_path(value: str | Path) -> Path:
@@ -162,6 +182,44 @@ def choose_background_video(post_id: str, background_path: Path, background_dir:
     digest = hashlib.sha256(str(post_id or "").encode("utf-8")).hexdigest()
     index = int(digest[:8], 16) % len(candidates)
     return candidates[index]
+
+
+def list_background_music(music_dir: Path) -> list[Path]:
+    if not music_dir.exists() or not music_dir.is_dir():
+        return []
+    return sorted(
+        path
+        for path in music_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in BACKGROUND_MUSIC_EXTENSIONS
+    )
+
+
+def choose_background_music(post_id: str) -> Path | None:
+    if not BACKGROUND_MUSIC_ENABLED:
+        return None
+
+    if BACKGROUND_MUSIC_PATH:
+        music_path = resolve_path(BACKGROUND_MUSIC_PATH)
+        if not music_path.exists():
+            raise RuntimeError(f"BACKGROUND_MUSIC_PATH does not exist: {music_path}")
+        return music_path
+
+    music_dir = resolve_path(BACKGROUND_MUSIC_DIR)
+    tracks = list_background_music(music_dir)
+    if not tracks:
+        raise RuntimeError(f"BACKGROUND_MUSIC_DIR has no supported audio files: {music_dir}")
+
+    strategy = BACKGROUND_MUSIC_PICK
+    if strategy == "first":
+        return tracks[0]
+    if strategy == "random":
+        import random
+
+        return random.choice(tracks)
+
+    digest = hashlib.sha256(str(post_id or "").encode("utf-8")).hexdigest()
+    index = int(digest[:8], 16) % len(tracks)
+    return tracks[index]
 
 
 def safe_filename(value: str) -> str:
@@ -627,6 +685,41 @@ def split_script_for_extracted_segments(script: str, extracted_segments: list[di
     return chunks[:target_count]
 
 
+def trim_audio_segment_text(text: str, max_chars: int) -> str:
+    text = clean_script(text)
+    if len(text) <= max_chars:
+        return text
+
+    clipped = text[:max_chars].strip()
+    breakpoints = [
+        clipped.rfind(". "),
+        clipped.rfind("! "),
+        clipped.rfind("? "),
+        clipped.rfind(", "),
+        clipped.rfind("; "),
+        clipped.rfind(" "),
+    ]
+    cut_at = max(breakpoints)
+    if cut_at >= 80:
+        clipped = clipped[:cut_at].strip()
+    return clipped.rstrip(".,;:!?") + "."
+
+
+def apply_audio_segment_limits(segments: list[dict]) -> list[dict]:
+    limited: list[dict] = []
+    for item in segments:
+        segment = dict(item)
+        segment_type = str(segment.get("type") or "").strip().lower()
+        max_chars = AUDIO_MAX_POST_CHARS if segment_type in {"post", "continuation"} else AUDIO_MAX_COMMENT_CHARS
+        segment["text"] = trim_audio_segment_text(str(segment.get("text") or ""), max_chars)
+        if clean_script(str(segment.get("text") or "")):
+            limited.append(segment)
+
+    if AUDIO_MAX_SEGMENTS > 0:
+        limited = limited[:AUDIO_MAX_SEGMENTS]
+    return limited
+
+
 def select_overlay_text_blocks(
     images: list[Path],
     script: str,
@@ -660,7 +753,7 @@ def select_audio_segments(script: str, extracted_content: str = "") -> list[dict
     segment_source = str(os.getenv("AUDIO_SEGMENT_SOURCE", "extracted")).strip().lower()
 
     if extracted_segments and (segment_source == "extracted" or content_mode == "story"):
-        return remove_embedded_later_segments(extracted_segments)
+        return apply_audio_segment_limits(remove_embedded_later_segments(extracted_segments))
 
     if not script_sections:
         return []
@@ -682,9 +775,9 @@ def select_audio_segments(script: str, extracted_content: str = "") -> list[dict
                     "author_key": matched_segment.get("author_key", ""),
                 }
             )
-        return remove_embedded_later_segments(paired_segments)
+        return apply_audio_segment_limits(remove_embedded_later_segments(paired_segments))
 
-    return [{"type": "segment", "text": text} for text in script_sections]
+    return apply_audio_segment_limits([{"type": "segment", "text": text} for text in script_sections])
 
 
 def overlap_key(text: str) -> str:
@@ -744,134 +837,6 @@ def dated_output_dir(base_dir: Path, post_id: str) -> Path:
     return path
 
 
-def create_silent_audio(path: Path, duration: float, sample_rate: int = 44100) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frames = int(duration * sample_rate)
-    chunk = b"\x00\x00" * min(sample_rate, max(sample_rate, frames))
-    with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        remaining = frames
-        while remaining > 0:
-            frame_count = min(sample_rate, remaining)
-            wav.writeframes(chunk[: frame_count * 2])
-            remaining -= frame_count
-
-
-def generate_fpt_tts(text: str, output_path: Path, api_key: str, voice: str, speed: str) -> None:
-    if not api_key:
-        raise RuntimeError("FPT_TTS_API_KEY is missing")
-    text = clean_script(text)[:5000]
-    if not text:
-        raise RuntimeError("No text available for FPT TTS")
-    response = requests.post(
-        FPT_TTS_URL,
-        headers={
-            "api_key": api_key,
-            "voice": voice,
-            "speed": str(speed),
-            "format": "mp3",
-            "Cache-Control": "no-cache",
-        },
-        data=text.encode("utf-8"),
-        timeout=30,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    if int(payload.get("error", -1)) != 0:
-        raise RuntimeError(payload.get("message") or f"FPT TTS error: {payload}")
-
-    audio_url = payload.get("async")
-    if not audio_url:
-        raise RuntimeError(f"FPT TTS response missing async URL: {payload}")
-
-    last_error = None
-    for _ in range(30):
-        time.sleep(3)
-        audio_response = requests.get(audio_url, timeout=30)
-        content_type = audio_response.headers.get("content-type", "").lower()
-        if audio_response.status_code == 200 and audio_response.content and ("audio" in content_type or len(audio_response.content) > 1024):
-            output_path.write_bytes(audio_response.content)
-            return
-        last_error = f"status={audio_response.status_code} content_type={content_type} bytes={len(audio_response.content)}"
-
-    raise RuntimeError(f"FPT TTS audio not ready after polling. Last response: {last_error}")
-
-
-def generate_fpt_tts_stable(text: str, output_path: Path, api_key: str, voice: str, speed: str) -> Path:
-    chunks = split_tts_chunks(text, max_chars=700)
-    if not chunks:
-        raise RuntimeError("No text available for FPT TTS")
-
-    if len(chunks) == 1:
-        generate_fpt_tts(chunks[0], output_path, api_key, voice, speed)
-        return output_path
-
-    chunk_dir = output_path.parent / f"{output_path.stem}_fpt_chunks"
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-    chunk_paths = []
-    for index, chunk in enumerate(chunks, start=1):
-        chunk_path = chunk_dir / f"{output_path.stem}_{index:02d}.mp3"
-        generate_fpt_tts(chunk, chunk_path, api_key, voice, speed)
-        chunk_paths.append(chunk_path)
-
-    return concat_audio_files(chunk_paths, output_path)
-
-
-def generate_windows_sapi(text: str, output_path: Path) -> None:
-    text_path = output_path.with_suffix(".txt")
-    script_path = output_path.with_suffix(".ps1")
-    text_path.write_text(text, encoding="utf-8")
-    script_path.write_text(
-        """
-param(
-  [Parameter(Mandatory=$true)][string]$TextPath,
-  [Parameter(Mandatory=$true)][string]$OutputPath
-)
-Add-Type -AssemblyName System.Speech
-$ErrorActionPreference = 'Stop'
-$text = Get-Content -LiteralPath $TextPath -Raw -Encoding UTF8
-$voiceName = $env:SAPI_VOICE
-$speaker = New-Object System.Speech.Synthesis.SpeechSynthesizer
-if ($voiceName) { $speaker.SelectVoice($voiceName) }
-$speaker.Rate = 1
-$speaker.Volume = 100
-$speaker.SetOutputToWaveFile($OutputPath)
-$speaker.Speak($text)
-$speaker.Dispose()
-""".strip(),
-        encoding="utf-8",
-    )
-    result = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script_path),
-            "-TextPath",
-            str(text_path),
-            "-OutputPath",
-            str(output_path),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "Windows SAPI failed").strip())
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        raise RuntimeError("Windows SAPI did not create an audio file.")
-
-
-async def generate_edge_tts(text: str, output_path: Path, voice: str, rate: str = DEFAULT_EDGE_TTS_RATE) -> None:
-    if edge_tts is None:
-        raise RuntimeError("edge-tts is not installed")
-    await edge_tts.Communicate(text=text, voice=voice, rate=rate).save(str(output_path))
-
-
 def split_tts_chunks(text: str, max_chars: int = 850) -> list[str]:
     text = clean_script(text)
     if len(text) <= max_chars:
@@ -902,53 +867,6 @@ def split_tts_chunks(text: str, max_chars: int = 850) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
-
-
-def generate_edge_tts_stable(text: str, output_path: Path, voice: str) -> Path:
-    chunks = split_tts_chunks(text)
-    if not chunks:
-        raise RuntimeError("No text available for edge-tts")
-
-    if len(chunks) == 1:
-        try:
-            asyncio.run(generate_edge_tts(chunks[0], output_path, voice, DEFAULT_EDGE_TTS_RATE))
-            return output_path
-        except Exception:
-            asyncio.run(generate_edge_tts(chunks[0], output_path, voice, "+0%"))
-            return output_path
-
-    chunk_dir = output_path.parent / f"{output_path.stem}_chunks"
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-    chunk_paths = []
-    for index, chunk in enumerate(chunks, start=1):
-        chunk_path = chunk_dir / f"{output_path.stem}_{index:02d}.mp3"
-        try:
-            asyncio.run(generate_edge_tts(chunk, chunk_path, voice, DEFAULT_EDGE_TTS_RATE))
-        except Exception:
-            asyncio.run(generate_edge_tts(chunk, chunk_path, voice, "+0%"))
-        chunk_paths.append(chunk_path)
-
-    return concat_audio_files(chunk_paths, output_path)
-
-
-def generate_gtts_stable(text: str, output_path: Path) -> Path:
-    chunks = split_tts_chunks(text, max_chars=900)
-    if not chunks:
-        raise RuntimeError("No text available for gTTS")
-
-    if len(chunks) == 1:
-        gTTS(text=chunks[0], lang="vi").save(str(output_path))
-        return output_path
-
-    chunk_dir = output_path.parent / f"{output_path.stem}_gtts_chunks"
-    chunk_dir.mkdir(parents=True, exist_ok=True)
-    chunk_paths = []
-    for index, chunk in enumerate(chunks, start=1):
-        chunk_path = chunk_dir / f"{output_path.stem}_{index:02d}.mp3"
-        gTTS(text=chunk, lang="vi").save(str(chunk_path))
-        chunk_paths.append(chunk_path)
-
-    return concat_audio_files(chunk_paths, output_path)
 
 
 def get_vieneu_client():
@@ -993,13 +911,69 @@ def get_vieneu_voice(client):
     return _VIENEU_VOICE
 
 
-def generate_vieneu_tts_stable(text: str, output_path: Path) -> Path:
+def get_vieneu_voice_by_spec(client, voice_spec: str = ""):
+    spec = str(voice_spec or "").strip()
+    if not spec:
+        return get_vieneu_voice(client)
+
+    cache_key = spec
+    if cache_key in _VIENEU_VOICE_CACHE:
+        return _VIENEU_VOICE_CACHE[cache_key]
+
+    lowered = spec.lower()
+    if lowered in {"default", "vieneu", "auto"}:
+        voice = get_vieneu_voice(client)
+        _VIENEU_VOICE_CACHE[cache_key] = voice
+        return voice
+
+    if lowered.startswith("preset:"):
+        preset_id = spec.split(":", 1)[1].strip()
+        if not preset_id:
+            raise RuntimeError("VieNeu preset voice spec is missing preset id")
+        if not hasattr(client, "get_preset_voice"):
+            raise RuntimeError("Installed VieNeu version does not support preset voices")
+        voice = client.get_preset_voice(preset_id)
+        _VIENEU_VOICE_CACHE[cache_key] = voice
+        return voice
+
+    if lowered.startswith("ref:"):
+        ref_value = spec.split(":", 1)[1].strip()
+    else:
+        ref_value = spec
+
+    ref_audio = Path(ref_value)
+    if not ref_audio.is_absolute():
+        ref_audio = PROJECT_ROOT / ref_audio
+    if not ref_audio.exists():
+        raise RuntimeError(
+            f"VieNeu voice spec must be preset:<id> or ref:<audio_path>; file not found: {ref_audio}"
+        )
+
+    voice = client.encode_reference(str(ref_audio))
+    _VIENEU_VOICE_CACHE[cache_key] = voice
+    return voice
+
+
+def normalize_vieneu_voice_spec(voice_spec: str = "") -> str:
+    spec = str(voice_spec or "").strip()
+    lowered = spec.lower()
+    if not spec or lowered in {"default", "vieneu", "auto"}:
+        return ""
+    if lowered.startswith(("preset:", "ref:")):
+        return spec
+    if Path(spec).suffix.lower() in VIENEU_REFERENCE_EXTENSIONS:
+        return spec
+    return ""
+
+
+def generate_vieneu_tts_stable(text: str, output_path: Path, voice_spec: str = "") -> Path:
     chunks = split_tts_chunks(text, max_chars=500)
     if not chunks:
         raise RuntimeError("No text available for VieNeu TTS")
 
     client = get_vieneu_client()
-    voice = get_vieneu_voice(client)
+    voice_spec = normalize_vieneu_voice_spec(voice_spec)
+    voice = get_vieneu_voice_by_spec(client, voice_spec)
     output_path = output_path.with_suffix(".wav")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1026,45 +1000,12 @@ def generate_vieneu_tts_stable(text: str, output_path: Path) -> Path:
     return concat_audio_files(chunk_paths, output_path)
 
 
-def generate_audio(text: str, output_path: Path, fallback_duration: float, voice: str, fpt_api_key: str, fpt_voice: str, fpt_speed: str) -> tuple[Path, str]:
+def generate_audio(text: str, output_path: Path, voice: str) -> tuple[Path, str]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if VIENEU_TTS_ENABLED:
-        try:
-            vieneu_path = generate_vieneu_tts_stable(text, output_path.with_suffix(".wav"))
-            return vieneu_path, f"tts=vieneu mode={VIENEU_MODE}"
-        except Exception as exc:
-            log(f"VieNeu TTS failed, trying FPT TTS: {exc}")
-
-    if fpt_api_key:
-        try:
-            generate_fpt_tts_stable(text, output_path, fpt_api_key, fpt_voice, fpt_speed)
-            return output_path, f"tts=fpt voice={fpt_voice} speed={fpt_speed}"
-        except Exception as exc:
-            log(f"FPT TTS failed, trying next TTS engine: {exc}")
-
-    try:
-        generate_edge_tts_stable(text, output_path, voice)
-        return output_path, f"tts=edge-tts voice={voice}"
-    except Exception as exc:
-        log(f"edge-tts failed, trying gTTS: {exc}")
-
-    try:
-        generate_gtts_stable(text, output_path)
-        return output_path, "tts=gTTS"
-    except Exception as exc:
-        log(f"gTTS failed, trying Windows SAPI: {exc}")
-
-    try:
-        sapi_path = output_path.with_suffix(".wav")
-        generate_windows_sapi(text, sapi_path)
-        return sapi_path, "tts=windows-sapi"
-    except Exception as exc:
-        log(f"Windows SAPI failed, using silent fallback: {exc}")
-
-    silent_path = output_path.with_suffix(".wav")
-    create_silent_audio(silent_path, fallback_duration)
-    return silent_path, "tts=silent-fallback"
+    if not VIENEU_TTS_ENABLED:
+        raise RuntimeError("VieNeu TTS is required but VIENEU_TTS_ENABLED is false")
+    vieneu_path = generate_vieneu_tts_stable(text, output_path.with_suffix(".wav"), voice)
+    return vieneu_path, f"tts=vieneu mode={VIENEU_MODE} voice={voice or 'default'}"
 
 
 def generate_segment_audio(
@@ -1072,47 +1013,20 @@ def generate_segment_audio(
     output_path: Path,
     fallback_duration: float,
     voice: str,
-    fpt_api_key: str,
-    fpt_voice: str,
-    fpt_speed: str,
     tts_engine: str,
 ) -> tuple[Path, str]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tts_engine = str(tts_engine or "auto").strip().lower()
 
-    if tts_engine == "fpt":
-        if not fpt_api_key:
-            raise RuntimeError("FPT TTS selected but FPT_TTS_API_KEY is missing")
-        try:
-            generate_fpt_tts_stable(text, output_path, fpt_api_key, fpt_voice, fpt_speed)
-            return output_path, f"tts=fpt voice={fpt_voice} speed={fpt_speed}"
-        except Exception as exc:
-            raise RuntimeError(f"FPT TTS failed for fixed segment voice {fpt_voice}: {exc}") from exc
-
-    if tts_engine == "edge":
-        try:
-            generate_edge_tts_stable(text, output_path, voice)
-            return output_path, f"tts=edge-tts voice={voice} rate={DEFAULT_EDGE_TTS_RATE}"
-        except Exception as exc:
-            raise RuntimeError(f"edge-tts failed for fixed segment voice {voice}: {exc}") from exc
-
-    if tts_engine == "vieneu":
-        if not VIENEU_TTS_ENABLED:
-            raise RuntimeError("VieNeu TTS selected but VIENEU_TTS_ENABLED is false")
-        try:
-            vieneu_path = generate_vieneu_tts_stable(text, output_path.with_suffix(".wav"))
-            return vieneu_path, f"tts=vieneu mode={VIENEU_MODE}"
-        except Exception as exc:
-            raise RuntimeError(f"VieNeu TTS failed for fixed segment: {exc}") from exc
-
-    if tts_engine == "gtts":
-        try:
-            generate_gtts_stable(text, output_path)
-            return output_path, "tts=gTTS voice=vi"
-        except Exception as exc:
-            raise RuntimeError(f"gTTS failed for fixed segment voice vi: {exc}") from exc
-
-    return generate_audio(text, output_path, fallback_duration, voice, fpt_api_key, fpt_voice, fpt_speed)
+    if tts_engine not in {"auto", "vieneu"}:
+        raise RuntimeError(f"Unsupported TTS engine for VieNeu-only mode: {tts_engine}")
+    if not VIENEU_TTS_ENABLED:
+        raise RuntimeError("VieNeu TTS is required but VIENEU_TTS_ENABLED is false")
+    try:
+        vieneu_path = generate_vieneu_tts_stable(text, output_path.with_suffix(".wav"), voice)
+        return vieneu_path, f"tts=vieneu mode={VIENEU_MODE} voice={voice or 'default'}"
+    except Exception as exc:
+        raise RuntimeError(f"VieNeu TTS failed for fixed segment voice {voice or 'default'}: {exc}") from exc
 
 
 def concat_audio_files(paths: list[Path], output_path: Path) -> Path:
@@ -1364,41 +1278,6 @@ def concat_audio_files_legacy(paths: list[Path], output_path: Path) -> Path:
     return output_path
 
 
-def generate_multi_voice_audio(
-    segments: list[dict],
-    output_path: Path,
-    default_voice: str,
-    discussion_voices: list[str],
-) -> tuple[Path, str]:
-    if edge_tts is None:
-        raise RuntimeError("edge-tts is not installed")
-    if not segments:
-        raise RuntimeError("No script segments available for multi-voice generation.")
-
-    temp_dir = output_path.parent / "_segments"
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    comment_voice_index = 0
-    segment_files: list[Path] = []
-
-    for index, item in enumerate(segments, start=1):
-        text = clean_script(str(item.get("text") or ""))
-        if not text:
-            continue
-        segment_type = str(item.get("type") or "segment").lower()
-        voice = default_voice
-        if segment_type == "comment" and discussion_voices:
-            voice = discussion_voices[comment_voice_index % len(discussion_voices)]
-            comment_voice_index += 1
-        segment_path = temp_dir / f"segment_{index:02d}.mp3"
-        asyncio.run(generate_edge_tts(text, segment_path, voice))
-        segment_files.append(segment_path)
-
-    if not segment_files:
-        raise RuntimeError("Multi-voice generation produced no audio segments.")
-
-    return concat_audio_files(segment_files, output_path), f"tts=edge-tts multi-voice voices={','.join(discussion_voices or [default_voice])}"
-
-
 def select_segment_voice(
     segment: dict,
     default_voice: str,
@@ -1431,9 +1310,6 @@ def generate_segments_with_timing(
     segments: list[dict],
     temp_dir: Path,
     voice: str,
-    fpt_api_key: str,
-    fpt_voice: str,
-    fpt_speed: str,
     discussion_voices: list[str],
     author_voices: list[str],
     tts_engine: str = "auto",
@@ -1465,9 +1341,6 @@ def generate_segments_with_timing(
             segment_path,
             fallback_duration,
             segment_voice,
-            fpt_api_key,
-            fpt_voice,
-            fpt_speed,
             tts_engine=tts_engine,
         )
 
@@ -1715,6 +1588,55 @@ def escape_filter_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
+def ffmpeg_number(value: float) -> str:
+    return f"{value:.3f}".rstrip("0").rstrip(".") or "0"
+
+
+def overlay_animation_duration(start: float, end: float) -> float:
+    visible_duration = max(0.0, end - start)
+    if OVERLAY_ANIMATION in {"none", "off", "false", "0"} or visible_duration <= 0.2:
+        return 0.0
+    return min(OVERLAY_ANIMATION_SECONDS, max(0.0, visible_duration / 3.0))
+
+
+def overlay_y_expression(start: float, end: float) -> str:
+    base_y = f"(H-h)*{OVERLAY_TOP_RATIO}"
+    animation_duration = overlay_animation_duration(start, end)
+    if animation_duration <= 0 or OVERLAY_SLIDE_PIXELS <= 0 or "slide" not in OVERLAY_ANIMATION:
+        return base_y
+
+    start_s = ffmpeg_number(start)
+    intro_end_s = ffmpeg_number(start + animation_duration)
+    duration_s = ffmpeg_number(animation_duration)
+    # Escape commas because this expression is embedded inside the overlay filter.
+    return (
+        f"{base_y}+if(lt(t\\,{intro_end_s})\\,"
+        f"{OVERLAY_SLIDE_PIXELS}*(1-(t-{start_s})/{duration_s})\\,0)"
+    )
+
+
+def overlay_video_filters(input_label: str, output_label: str, width: int, start: float, end: float, duration: float, fps: int) -> str:
+    visible_duration = max(0.2, min(duration, end) - max(0.0, start))
+    filters = [
+        f"[{input_label}]fps={fps}",
+        f"trim=duration={ffmpeg_number(visible_duration)}",
+        "setpts=PTS-STARTPTS",
+        f"scale={width}:-2:flags=lanczos",
+        "format=rgba",
+    ]
+
+    animation_duration = overlay_animation_duration(start, end)
+    if animation_duration > 0 and "fade" in OVERLAY_ANIMATION:
+        fade_in_start = "0"
+        fade_duration = ffmpeg_number(animation_duration)
+        fade_out_start = ffmpeg_number(max(0.0, visible_duration - animation_duration))
+        filters.append(f"fade=t=in:st={fade_in_start}:d={fade_duration}:alpha=1")
+        filters.append(f"fade=t=out:st={fade_out_start}:d={fade_duration}:alpha=1")
+
+    filters.append(f"setpts=PTS+{ffmpeg_number(max(0.0, start))}/TB")
+    return ",".join(filters) + f"[{output_label}]"
+
+
 def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list[dict], duration: float, fps: int = 30) -> None:
     ffmpeg = ffmpeg_executable()
     target_w, target_h = TARGET_SIZE
@@ -1736,10 +1658,6 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
 
     filter_parts = [bg_label]
     current_label = "base"
-    # Keep the overlay high on screen, but avoid complex nested expressions
-    # that break ffmpeg filter parsing across environments.
-    overlay_y_expr = f"(H-h)*{OVERLAY_TOP_RATIO}"
-
     for index, item in enumerate(overlays):
         command.extend(["-loop", "1", "-i", str(item["path"])])
         input_label = f"{next_input_index}:v"
@@ -1748,11 +1666,10 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
         width = int(item["width"])
         start = float(item["start"])
         end = float(item["end"])
+        overlay_y_expr = overlay_y_expression(start, end)
+        filter_parts.append(overlay_video_filters(input_label, overlay_label, width, start, end, duration, fps))
         filter_parts.append(
-            f"[{input_label}]fps={fps},trim=duration={duration},setpts=PTS-STARTPTS,scale={width}:-2:flags=lanczos[{overlay_label}]"
-        )
-        filter_parts.append(
-            f"[{current_label}][{overlay_label}]overlay=(W-w)/2:{overlay_y_expr}:enable='between(t,{start},{end})'[{output_label}]"
+            f"[{current_label}][{overlay_label}]overlay=(W-w)/2:{overlay_y_expr}:enable='between(t,{start},{end})':eof_action=pass[{output_label}]"
         )
         current_label = output_label
         next_input_index += 1
@@ -1795,7 +1712,8 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
 
     result = subprocess.run(command, capture_output=True, text=True, timeout=180)
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "ffmpeg visual build failed").strip())
+        detail = (result.stderr or result.stdout or "ffmpeg visual build failed").strip()
+        raise RuntimeError(f"{detail} (ffmpeg returncode={result.returncode})")
 
 
 def write_voice(
@@ -1805,9 +1723,6 @@ def write_voice(
     audio_dir: Path,
     temp_dir: Path,
     voice: str,
-    fpt_api_key: str,
-    fpt_voice: str,
-    fpt_speed: str,
     discussion_voices: list[str],
     author_voices: list[str],
 ) -> dict:
@@ -1824,17 +1739,7 @@ def write_voice(
 
     if audio_segments:
         effective_discussion_voices = discussion_voices if content_mode == "discussion" else []
-        voice_engines = []
-        if VIENEU_TTS_ENABLED:
-            voice_engines.append("vieneu")
-        if effective_discussion_voices or author_voices:
-            voice_engines.append("edge")
-        else:
-            if fpt_api_key:
-                voice_engines.append("fpt")
-            voice_engines.append("edge")
-            if str(os.getenv("TTS_ALLOW_GTTS_FALLBACK", "")).strip().lower() in {"1", "true", "yes"}:
-                voice_engines.append("gtts")
+        voice_engines = tts_engine_order()
 
         last_error = None
         timed_segments, segment_notes = [], []
@@ -1844,9 +1749,6 @@ def write_voice(
                     audio_segments,
                     temp_post_dir / f"segments_{engine}",
                     voice,
-                    fpt_api_key,
-                    fpt_voice,
-                    fpt_speed,
                     effective_discussion_voices,
                     author_voices,
                     tts_engine=engine,
@@ -1854,10 +1756,10 @@ def write_voice(
                 break
             except RuntimeError as exc:
                 last_error = exc
-                log(f"{engine} batch TTS failed, trying next engine: {exc}")
+                log(f"{engine} batch TTS failed: {exc}")
 
         if not timed_segments:
-            raise RuntimeError(f"All fixed voice TTS engines failed: {last_error}")
+            raise RuntimeError(f"VieNeu fixed voice TTS failed: {last_error}")
     else:
         timed_segments, segment_notes = [], []
 
@@ -1898,11 +1800,7 @@ def write_voice(
         audio_path, audio_note = generate_audio(
             script,
             output_dir / "narration.mp3",
-            fallback_duration,
             voice,
-            fpt_api_key,
-            fpt_voice,
-            fpt_speed,
         )
         duration = round(probe_duration(audio_path), 2)
         timing_manifest = [{"image_index": 0, "start": 0.0, "end": round(duration, 3), "type": "segment"}]
@@ -1978,11 +1876,8 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
     output_path = output_dir / "final.mp4"
     audio_duration = probe_duration(audio_path)
     duration = max(1.0, audio_duration)
+    music_path = choose_background_music(post_id)
 
-    filter_complex = (
-        "[0:v]setpts=PTS-STARTPTS,fps=30[v];"
-        "[1:a]aresample=44100:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS[a]"
-    )
     command = [
         ffmpeg_executable(),
         "-y",
@@ -1993,44 +1888,92 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
         str(visual_path),
         "-i",
         str(audio_path),
-        "-filter_complex",
-        filter_complex,
-        "-map",
-        "[v]",
-        "-map",
-        "[a]",
-        "-t",
-        str(duration),
-        "-fps_mode",
-        "cfr",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:v",
-        "libx264",
-        "-crf",
-        VIDEO_CRF,
-        "-preset",
-        VIDEO_ENCODE_PRESET,
-        "-b:v",
-        VIDEO_TARGET_BITRATE,
-        "-maxrate",
-        VIDEO_MAXRATE,
-        "-bufsize",
-        VIDEO_BUFSIZE,
-        "-profile:v",
-        "high",
-        "-c:a",
-        "aac",
-        "-ar",
-        "44100",
-        "-ac",
-        "1",
-        "-b:a",
-        AUDIO_BITRATE,
-        "-movflags",
-        "+faststart",
-        str(output_path),
     ]
+    if music_path:
+        command.extend(["-stream_loop", "-1"])
+        if BACKGROUND_MUSIC_START_OFFSET_SECONDS > 0:
+            command.extend(["-ss", f"{BACKGROUND_MUSIC_START_OFFSET_SECONDS:.3f}"])
+        command.extend(["-i", str(music_path)])
+
+    fade_duration = min(BACKGROUND_MUSIC_FADE_SECONDS, max(0.0, duration / 3.0))
+    fade_out_start = max(0.0, duration - fade_duration)
+    if music_path:
+        music_filters = [
+            "[2:a]aresample=44100:first_pts=0",
+            "aformat=sample_fmts=fltp:channel_layouts=stereo",
+            f"volume={BACKGROUND_MUSIC_VOLUME}",
+        ]
+        if fade_duration > 0:
+            music_filters.append(f"afade=t=in:st=0:d={fade_duration:.3f}")
+            music_filters.append(f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}")
+        music_filter = ",".join(music_filters) + "[musicbase]"
+        if BACKGROUND_MUSIC_DUCKING:
+            music_filter = (
+                music_filter
+                + ";[musicbase][voice_sc]sidechaincompress=threshold=0.045:ratio=8:attack=60:release=450[ducked]"
+            )
+            music_label = "ducked"
+            voice_split_filter = "[voicebase]asplit=2[voice_sc][voice_mix];"
+            voice_mix_label = "voice_mix"
+        else:
+            music_label = "musicbase"
+            voice_split_filter = ""
+            voice_mix_label = "voicebase"
+        filter_complex = (
+            "[0:v]setpts=PTS-STARTPTS,fps=30[v];"
+            "[1:a]aresample=44100:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS[voicebase];"
+            f"{voice_split_filter}"
+            f"{music_filter};"
+            f"[{voice_mix_label}][{music_label}]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            "alimiter=limit=0.95[a]"
+        )
+    else:
+        filter_complex = (
+            "[0:v]setpts=PTS-STARTPTS,fps=30[v];"
+            "[1:a]aresample=44100:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS[a]"
+        )
+
+    command.extend(
+        [
+            "-filter_complex",
+            filter_complex,
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            "-t",
+            str(duration),
+            "-fps_mode",
+            "cfr",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:v",
+            "libx264",
+            "-crf",
+            VIDEO_CRF,
+            "-preset",
+            VIDEO_ENCODE_PRESET,
+            "-b:v",
+            VIDEO_TARGET_BITRATE,
+            "-maxrate",
+            VIDEO_MAXRATE,
+            "-bufsize",
+            VIDEO_BUFSIZE,
+            "-profile:v",
+            "high",
+            "-c:a",
+            "aac",
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-b:a",
+            AUDIO_BITRATE,
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+    )
     result = subprocess.run(command, capture_output=True, text=True, timeout=900)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout or "ffmpeg merge failed").strip())
@@ -2042,7 +1985,7 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
         "Extracted_Content": extracted_content,
         "Caption": build_caption(script=script, extracted_content=extracted_content),
         "Status": "Draft",
-        "Note": f"Phase 3C: draft ready duration={round(duration, 2)}s",
+        "Note": f"Phase 3C: draft ready duration={round(duration, 2)}s music={music_path.name if music_path else 'off'}",
     }
 
 
@@ -2065,9 +2008,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--voice", default=os.getenv("TTS_VOICE", DEFAULT_TTS_VOICE))
     parser.add_argument("--discussion-voices", default=os.getenv("TTS_DISCUSSION_VOICES", ",".join(DEFAULT_DISCUSSION_VOICES)))
     parser.add_argument("--author-voices", default=os.getenv("TTS_AUTHOR_VOICES", ",".join(DEFAULT_AUTHOR_VOICES)))
-    parser.add_argument("--fpt-api-key", default=os.getenv("FPT_TTS_API_KEY", ""))
-    parser.add_argument("--fpt-voice", default=os.getenv("FPT_TTS_VOICE", "banmai"))
-    parser.add_argument("--fpt-speed", default=os.getenv("FPT_TTS_SPEED", "1"))
     return parser.parse_args()
 
 
@@ -2097,9 +2037,6 @@ def main() -> int:
                 voice=args.voice,
                 discussion_voices=discussion_voices,
                 author_voices=author_voices,
-                fpt_api_key=args.fpt_api_key,
-                fpt_voice=args.fpt_voice,
-                fpt_speed=args.fpt_speed,
             )
         elif args.mode == "visual":
             if not args.screenshots:

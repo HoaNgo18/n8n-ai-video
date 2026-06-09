@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from html import escape
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+import requests
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+from src.local_review import validate_review_token
 
 
 PROJECT_ROOT = Path("/workspace")
@@ -68,6 +74,22 @@ class Phase4CompactPayload(BaseModel):
     update: dict = Field(default_factory=dict)
 
 
+def n8n_phase4_callback_url() -> str:
+    load_dotenv(ENV_PATH, override=True)
+    return (
+        os.getenv("N8N_PHASE4_CALLBACK_URL", "").strip()
+        or "http://n8n:5678/webhook/phase4-review-callback"
+    )
+
+
+def forward_telegram_callback_to_n8n(payload: dict) -> None:
+    target = n8n_phase4_callback_url()
+    try:
+        requests.post(target, json=payload, timeout=1200).raise_for_status()
+    except Exception as exc:
+        print(f"Could not forward Telegram callback to n8n: {exc}", flush=True)
+
+
 def run_python(args: list[str], timeout: int) -> dict:
     try:
         result = subprocess.run(
@@ -124,9 +146,113 @@ def run_python(args: list[str], timeout: int) -> dict:
         ) from exc
 
 
+def compact_error_detail(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict):
+            parts = [str(detail.get("message") or "").strip()]
+            stderr = str(detail.get("stderr") or "").strip()
+            stdout = str(detail.get("stdout") or "").strip()
+            if stderr:
+                parts.append(stderr)
+            elif stdout:
+                parts.append(stdout)
+            message = " | ".join(part for part in parts if part)
+        else:
+            message = str(detail)
+    else:
+        message = str(exc)
+    return " ".join(message.split())[:500]
+
+
+def failed_result(post_id: str, phase: str, exc: Exception, **extra: str) -> dict[str, str]:
+    return {
+        "ID": post_id,
+        "Status": "Failed",
+        "Note": f"{phase} failed: {compact_error_detail(exc)}",
+        **extra,
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/review/{post_id}", response_class=HTMLResponse)
+def review_page(post_id: str, token: str) -> HTMLResponse:
+    load_dotenv(ENV_PATH, override=True)
+    try:
+        video_path = validate_review_token(post_id, token)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail={"message": str(exc)}) from exc
+
+    quoted_id = quote(post_id, safe="")
+    quoted_token = quote(token, safe="")
+    video_url = f"/review/{quoted_id}/video?token={quoted_token}"
+    download_url = f"/review/{quoted_id}/download?token={quoted_token}"
+    safe_post_id = escape(post_id)
+    safe_file_name = escape(video_path.name)
+    html = f"""<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review {safe_post_id}</title>
+  <style>
+    body {{ margin: 0; font-family: Arial, sans-serif; background: #111; color: #f5f5f5; }}
+    main {{ max-width: 860px; margin: 0 auto; padding: 24px 16px 40px; }}
+    h1 {{ font-size: 20px; font-weight: 700; margin: 0 0 14px; }}
+    video {{ display: block; width: min(100%, 430px); max-height: 82vh; margin: 0 auto; background: #000; border-radius: 8px; }}
+    .bar {{ display: flex; gap: 10px; justify-content: center; margin-top: 16px; flex-wrap: wrap; }}
+    a {{ color: #111; background: #f5f5f5; border-radius: 6px; padding: 9px 12px; text-decoration: none; font-weight: 700; }}
+    p {{ color: #aaa; font-size: 13px; text-align: center; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Review: {safe_post_id}</h1>
+    <video src="{video_url}" controls playsinline preload="metadata"></video>
+    <div class="bar">
+      <a href="{video_url}" target="_blank" rel="noreferrer">Open video</a>
+      <a href="{download_url}">Download MP4</a>
+    </div>
+    <p>{safe_file_name}</p>
+  </main>
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
+@app.get("/review/{post_id}/video")
+def review_video(post_id: str, token: str) -> FileResponse:
+    load_dotenv(ENV_PATH, override=True)
+    try:
+        video_path = validate_review_token(post_id, token)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail={"message": str(exc)}) from exc
+    return FileResponse(str(video_path), media_type="video/mp4")
+
+
+@app.get("/review/{post_id}/download")
+def review_download(post_id: str, token: str) -> FileResponse:
+    load_dotenv(ENV_PATH, override=True)
+    try:
+        video_path = validate_review_token(post_id, token)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail={"message": str(exc)}) from exc
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        filename=video_path.name,
+    )
+
+
+@app.post("/phase4/telegram-callback")
+async def phase4_telegram_callback(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+    payload = await request.json()
+    background_tasks.add_task(forward_telegram_callback_to_n8n, payload)
+    return {"status": "accepted"}
 
 
 @app.post("/phase1/threads-miner")
@@ -139,34 +265,47 @@ def phase1_threads_miner() -> dict[str, object]:
 
 @app.post("/phase2/screenshot-extract")
 def phase2_screenshot_extract(payload: Phase2Payload) -> dict:
-    data = run_python(
-        ["src/screenshot_extractor.py", "--id", payload.id, "--url", payload.url],
-        timeout=240,
-    )
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=500, detail={"message": "screenshot_extractor.py must return a JSON object"})
-    return data
+    try:
+        data = run_python(
+            ["src/screenshot_extractor.py", "--id", payload.id, "--url", payload.url],
+            timeout=240,
+        )
+        if not isinstance(data, dict):
+            raise RuntimeError("screenshot_extractor.py must return a JSON object")
+        return data
+    except Exception as exc:
+        return failed_result(
+            payload.id,
+            "Phase 2 screenshot/extract",
+            exc,
+            Screenshots="",
+            Extracted_Content="",
+            Narrator_Script="",
+        )
 
 
 @app.post("/phase3/voice")
 def phase3_voice(payload: Phase3VoicePayload) -> dict:
-    data = run_python(
-        [
-            "src/video_factory.py",
-            "--mode",
-            "voice",
-            "--id",
-            payload.id,
-            "--script",
-            payload.script,
-            "--extracted-content",
-            payload.extracted_content,
-        ],
-        timeout=420,
-    )
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=500, detail={"message": "video_factory.py voice mode must return a JSON object"})
-    return data
+    try:
+        data = run_python(
+            [
+                "src/video_factory.py",
+                "--mode",
+                "voice",
+                "--id",
+                payload.id,
+                "--script",
+                payload.script,
+                "--extracted-content",
+                payload.extracted_content,
+            ],
+            timeout=420,
+        )
+        if not isinstance(data, dict):
+            raise RuntimeError("video_factory.py voice mode must return a JSON object")
+        return data
+    except Exception as exc:
+        return failed_result(payload.id, "Phase 3A voice", exc, Audio_Path="", Audio_Timing="")
 
 
 @app.post("/phase3/visual")
@@ -188,35 +327,41 @@ def phase3_visual(payload: Phase3VisualPayload) -> dict:
         args.extend(["--audio-path", payload.audio_path])
     if payload.audio_timing:
         args.extend(["--audio-timing", payload.audio_timing])
-    data = run_python(args, timeout=720)
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=500, detail={"message": "video_factory.py visual mode must return a JSON object"})
-    return data
+    try:
+        data = run_python(args, timeout=720)
+        if not isinstance(data, dict):
+            raise RuntimeError("video_factory.py visual mode must return a JSON object")
+        return data
+    except Exception as exc:
+        return failed_result(payload.id, "Phase 3B visual", exc, Visual_Video_Path="")
 
 
 @app.post("/phase3/merge")
 def phase3_merge(payload: Phase3MergePayload) -> dict:
-    data = run_python(
-        [
-            "src/video_factory.py",
-            "--mode",
-            "merge",
-            "--id",
-            payload.id,
-            "--audio-path",
-            payload.audio_path,
-            "--visual-path",
-            payload.visual_path,
-            "--script",
-            payload.script,
-            "--extracted-content",
-            payload.extracted_content,
-        ],
-        timeout=900,
-    )
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=500, detail={"message": "video_factory.py merge mode must return a JSON object"})
-    return data
+    try:
+        data = run_python(
+            [
+                "src/video_factory.py",
+                "--mode",
+                "merge",
+                "--id",
+                payload.id,
+                "--audio-path",
+                payload.audio_path,
+                "--visual-path",
+                payload.visual_path,
+                "--script",
+                payload.script,
+                "--extracted-content",
+                payload.extracted_content,
+            ],
+            timeout=900,
+        )
+        if not isinstance(data, dict):
+            raise RuntimeError("video_factory.py merge mode must return a JSON object")
+        return data
+    except Exception as exc:
+        return failed_result(payload.id, "Phase 3C merge", exc, Video_Path="", Caption="")
 
 
 @app.post("/phase4/draft-review")

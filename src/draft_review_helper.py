@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+
+from local_review import build_review_links, resolve_path
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -17,10 +15,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == "src" else Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
-DEFAULT_SERVICE_ACCOUNT_PATH = PROJECT_ROOT / "google-service-account.json"
-DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 
 def log(message: str) -> None:
@@ -41,103 +37,27 @@ def decode_cli_text(value: str | None) -> str:
     return raw
 
 
-def resolve_path(value: str | Path) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    return PROJECT_ROOT / path
-
-
-def bool_env(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "y"}
-
-
-def service_account_path() -> Path:
-    configured = (
-        os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip()
-        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    )
-    return resolve_path(configured) if configured else DEFAULT_SERVICE_ACCOUNT_PATH
-
-
-def drive_service():
-    key_path = service_account_path()
-    if not key_path.exists():
-        raise RuntimeError(
-            f"Google service account file not found: {key_path}. "
-            "Set GOOGLE_SERVICE_ACCOUNT_FILE or mount google-service-account.json into /workspace."
-        )
-    credentials = service_account.Credentials.from_service_account_file(str(key_path), scopes=DRIVE_SCOPES)
-    return build("drive", "v3", credentials=credentials, cache_discovery=False)
-
-
-def upload_to_drive(post_id: str, video_path: Path) -> dict:
+def prepare_draft_review(post_id: str, video_path: Path, caption: str) -> dict:
+    if not post_id:
+        raise RuntimeError("Missing review post ID")
     if not video_path.exists():
         raise RuntimeError(f"Video file not found: {video_path}")
 
-    folder_id = os.getenv("DRAFT_REVIEW_DRIVE_FOLDER_ID", "").strip()
-    file_name = f"phase3_draft_{post_id}_{video_path.name}"
-    metadata: dict[str, object] = {"name": file_name}
-    if folder_id:
-        metadata["parents"] = [folder_id]
-
-    service = drive_service()
-    media = MediaFileUpload(str(video_path), mimetype="video/mp4", resumable=True)
-    file_data = (
-        service.files()
-        .create(
-            body=metadata,
-            media_body=media,
-            fields="id,name,webViewLink,webContentLink",
-            supportsAllDrives=True,
-        )
-        .execute()
-    )
-
-    share_note = "private"
-    if bool_env("DRAFT_REVIEW_SHARE_ANYONE", True):
-        try:
-            service.permissions().create(
-                fileId=file_data["id"],
-                body={"type": "anyone", "role": "reader"},
-                fields="id",
-                supportsAllDrives=True,
-            ).execute()
-            share_note = "anyone_with_link"
-        except Exception as exc:
-            share_note = f"share_failed: {str(exc)[:160]}"
-            log(f"Could not share draft video publicly: {exc}")
-
-    return {
-        "file_id": file_data.get("id", ""),
-        "web_view_link": file_data.get("webViewLink", ""),
-        "web_content_link": file_data.get("webContentLink", ""),
-        "share_note": share_note,
-    }
-
-
-def prepare_draft_review(post_id: str, video_path: Path, caption: str) -> dict:
-    upload = upload_to_drive(post_id, video_path)
-    draft_url = upload["web_view_link"] or upload["web_content_link"]
-    if not draft_url:
-        raise RuntimeError("Google Drive upload succeeded but no review URL was returned")
-
+    links = build_review_links(post_id, video_path)
     return {
         "ID": post_id,
         "Video_Path": str(video_path),
         "Caption": caption,
-        "Draft_Video_URL": draft_url,
-        "Draft_Drive_File_ID": upload["file_id"],
+        "Draft_Video_URL": links["review_url"],
+        "Draft_Video_Download_URL": links["video_url"],
+        "Draft_Drive_File_ID": "",
         "Status": "Draft",
-        "Note": f"Phase 4: draft uploaded for review ({upload['share_note']})",
+        "Note": "Phase 4: local review link created; keep runner and tunnel online until admin approves or rejects",
     }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Upload the final Phase 3 draft for admin review.")
+    parser = argparse.ArgumentParser(description="Create a local signed review link for a Phase 3 draft.")
     parser.add_argument("--id", required=True)
     parser.add_argument("--video-path", required=True)
     parser.add_argument("--caption", required=True)
@@ -160,9 +80,10 @@ def main() -> int:
             "Video_Path": str(video_path),
             "Caption": caption,
             "Draft_Video_URL": "",
+            "Draft_Video_Download_URL": "",
             "Draft_Drive_File_ID": "",
             "Status": "Draft",
-            "Note": f"Phase 4 draft review upload failed: {str(exc)[:320]}",
+            "Note": f"Phase 4 local review link failed: {str(exc)[:320]}",
         }
 
     print(json.dumps(result, ensure_ascii=True))

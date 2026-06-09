@@ -166,7 +166,7 @@ def send_telegram_review(row: dict[str, Any]) -> dict[str, Any]:
             "Phase 4 draft ready for review",
             "",
             f"ID: {row.get('ID', '')}",
-            f"Draft: {draft_url}",
+            f"Review video: {draft_url}",
             "",
             "Caption:",
             preview,
@@ -186,7 +186,7 @@ def send_telegram_review(row: dict[str, Any]) -> dict[str, Any]:
                         {"text": "Approve", "callback_data": f"phase4|approve|{row.get('ID', '')}"},
                         {"text": "Reject", "callback_data": f"phase4|reject|{row.get('ID', '')}"},
                     ],
-                    [{"text": "Open Draft", "url": draft_url}],
+                    [{"text": "Open Review", "url": draft_url}],
                 ]
             },
         },
@@ -194,62 +194,6 @@ def send_telegram_review(row: dict[str, Any]) -> dict[str, Any]:
     )
     response.raise_for_status()
     return {"sent": True, "telegram_result": response.json().get("result") or {}}
-
-
-def create_telegram_review(post_id: str, video_path: Path, caption: str) -> dict[str, Any]:
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if not bot_token or not chat_id:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing")
-    if not video_path.exists():
-        raise RuntimeError(f"Video file not found: {video_path}")
-
-    preview = caption[:900] + "..." if len(caption) > 900 else caption
-    telegram_caption = "\n".join(
-        [
-            "Phase 4 draft ready for review",
-            "",
-            f"ID: {post_id}",
-            "",
-            "Caption:",
-            preview,
-        ]
-    )
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "Approve", "callback_data": f"phase4|approve|{post_id}"},
-                {"text": "Reject", "callback_data": f"phase4|reject|{post_id}"},
-            ]
-        ]
-    }
-    with video_path.open("rb") as handle:
-        response = requests.post(
-            f"https://api.telegram.org/bot{bot_token}/sendVideo",
-            data={
-                "chat_id": chat_id,
-                "caption": telegram_caption[:1024],
-                "supports_streaming": "true",
-                "reply_markup": json.dumps(reply_markup, ensure_ascii=True),
-            },
-            files={"video": (video_path.name, handle, "video/mp4")},
-            timeout=180,
-        )
-    response.raise_for_status()
-    message = response.json().get("result") or {}
-    video = message.get("video") or {}
-    message_id = str(message.get("message_id") or "").strip()
-    file_id = str(video.get("file_id") or "").strip()
-    review_ref = f"telegram://review/{chat_id}/{message_id}" if message_id else "telegram://review/sent"
-    return {
-        "ID": post_id,
-        "Video_Path": str(video_path),
-        "Caption": caption,
-        "Draft_Video_URL": review_ref,
-        "Draft_Drive_File_ID": file_id,
-        "Status": "Draft",
-        "Note": "Phase 4: draft video sent to Telegram for review",
-    }
 
 
 def answer_telegram_callback(callback: dict[str, Any], label: str) -> None:
@@ -317,19 +261,13 @@ def run_tick() -> dict[str, Any]:
         post_id = str(draft.get("ID", "")).strip()
         video_path = resolve_path(str(draft.get("Video_Path", "")).strip())
         caption = clean_caption(draft.get("Caption", ""))
-        review_transport = os.getenv("PHASE4_REVIEW_TRANSPORT", "telegram").strip().lower()
-        if review_transport == "drive":
-            result = prepare_draft_review(post_id, video_path, caption)
-        else:
-            result = create_telegram_review(post_id, video_path, caption)
+        result = prepare_draft_review(post_id, video_path, caption)
         update_row(headers, int(draft["_row_number"]), result)
-        telegram_result = {"sent": True, "transport": "telegram_video"}
-        if review_transport == "drive":
-            telegram_result = send_telegram_review(result)
+        telegram_result = send_telegram_review(result)
         return {
             "action": "draft_review_created",
             "id": post_id,
-            "review_transport": review_transport,
+            "review_transport": "local",
             "sheet_update": result,
             "telegram": telegram_result,
         }
@@ -354,18 +292,13 @@ def run_review(update: dict[str, Any]) -> dict[str, Any]:
     if not caption:
         raise RuntimeError("Missing caption for Phase 4 review")
 
-    review_transport = os.getenv("PHASE4_REVIEW_TRANSPORT", "telegram").strip().lower()
-    if review_transport == "drive":
-        result = prepare_draft_review(post_id, video_path, caption)
-        telegram_result = send_telegram_review(result)
-    else:
-        result = create_telegram_review(post_id, video_path, caption)
-        telegram_result = {"sent": True, "transport": "telegram_video"}
+    result = prepare_draft_review(post_id, video_path, caption)
+    telegram_result = send_telegram_review(result)
 
     return {
         "action": "draft_review_created",
         "id": post_id,
-        "review_transport": review_transport,
+        "review_transport": "local",
         "sheet_update": result,
         "telegram": telegram_result,
         **result,

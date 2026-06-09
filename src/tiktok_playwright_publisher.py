@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -23,6 +24,7 @@ if hasattr(sys.stderr, "reconfigure"):
 PROJECT_ROOT = Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name == "src" else Path(__file__).resolve().parent
 ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_COOKIES_PATH = PROJECT_ROOT / "tiktok_cookies.json"
+DEFAULT_COVER_DIR = PROJECT_ROOT / "runtime" / "data" / "temp" / "tiktok_covers"
 
 
 def log(message: str) -> None:
@@ -131,6 +133,45 @@ def upload_visibility() -> str:
     }.get(privacy_level, "only_you")
 
 
+def make_upload_cover(video_path: Path) -> Path | None:
+    timestamp_ms = int(os.getenv("TIKTOK_COVER_TIMESTAMP_MS", "1000"))
+    if timestamp_ms < 0:
+        return None
+
+    cover_dir = resolve_path(os.getenv("TIKTOK_COVER_DIR", str(DEFAULT_COVER_DIR)))
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    cover_path = cover_dir / f"{video_path.stem}_cover_{timestamp_ms}.jpg"
+    seek_seconds = max(0, timestamp_ms) / 1000
+
+    command = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{seek_seconds:.3f}",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+        "-q:v",
+        "2",
+        str(cover_path),
+    ]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except Exception as exc:
+        log(f"Could not generate TikTok cover image: {exc}")
+        return None
+
+    if not cover_path.exists() or cover_path.stat().st_size <= 0:
+        log("Could not generate TikTok cover image: empty output")
+        return None
+
+    log(f"Using TikTok cover image: {cover_path}")
+    return cover_path
+
+
 def upload_with_tiktok_uploader(video_path: Path, caption: str) -> bool:
     try:
         import tiktok_uploader.upload as upload_module
@@ -173,10 +214,12 @@ def upload_with_tiktok_uploader(video_path: Path, caption: str) -> bool:
         )
 
     uploader = TikTokUploader(**auth_kwargs, **browser_kwargs())
+    cover_path = make_upload_cover(video_path)
     return bool(
         uploader.upload_video(
             str(video_path),
             description=caption,
+            cover=str(cover_path) if cover_path else None,
             visibility=upload_visibility(),
             num_retries=int(os.getenv("TIKTOK_UPLOAD_RETRIES", "1")),
             skip_split_window=bool_env("TIKTOK_SKIP_SPLIT_WINDOW", False),

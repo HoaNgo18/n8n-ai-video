@@ -18,8 +18,8 @@ Each row represents one Threads post. The row is filled progressively by each pi
 | 10 | `Visual_Video_Path` | Phase 3B | File path | Local silent visual video path before merge. |
 | 11 | `Video_Path` | Phase 3C | File path | Local MP4 output path. |
 | 12 | `Caption` | Phase 3C / Admin | Text | Final TikTok caption, including hashtags. Phase 3C now asks Gemini to generate this from `Narrator_Script` and `Extracted_Content`, with the runner caption as fallback. |
-| 13 | `Draft_Video_URL` | Phase 4 | URL | Google Drive review link for the generated draft video. |
-| 14 | `Draft_Drive_File_ID` | Phase 4 | Text | Google Drive file ID for the review draft. |
+| 13 | `Draft_Video_URL` | Phase 4 | URL | Signed local runner review link for the generated draft video. |
+| 14 | `Draft_Drive_File_ID` | Phase 4 | Text | Legacy Drive file ID column. Local review flow leaves this empty. |
 | 15 | `Admin_Decision` | Admin | Text | Empty by default. Set to `approve` or `reject` during review. |
 | 16 | `TikTok_Publish_ID` | Phase 4 | Text | Machine confirmation from the TikTok publisher. Browser uploads use a `browser_<timestamp>` value. |
 | 17 | `Published_URL` | Phase 4 | URL | Final TikTok URL when available. May stay empty immediately after upload. |
@@ -57,7 +57,7 @@ Phase 3C: Merge Final
 
 Phase 4: Review + Auto Publish
   reads Draft rows without Draft_Video_URL
-  uploads Video_Path to Drive and writes Draft_Video_URL, Draft_Drive_File_ID, Note
+  creates a signed local review link and writes Draft_Video_URL, Note
   reads Draft rows with Admin_Decision
   sets Status = Approved or Rejected
   reads Approved rows

@@ -46,7 +46,7 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
 
 - [x] **Phase 4: Admin Review + Auto Publish MVP**
   - [x] Active n8n workflow: `Phase 4 - Review and Publish v2` (`jIwgeCiSLUefvteg`)
-  - [x] Upload `Draft` videos to Drive for review and write `Draft_Video_URL`.
+  - [x] Create signed local runner review links for `Draft` videos and write `Draft_Video_URL`.
   - [x] Convert `Draft + Admin_Decision=approve` to `Approved`.
   - [x] Convert `Draft + Admin_Decision=reject` to `Rejected`.
   - [x] Auto-publish approved rows through the Phase 4 publisher endpoint.
@@ -54,7 +54,7 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
   - [x] Switch TikTok publishing from Content Posting API to browser/cookie uploader mode.
   - [x] Update `TikTok_Publish_ID`, `Published_URL`, `Status`, and `Note`.
   - [x] Import the Phase 4 workflow into n8n as `Phase 4 - Review and Publish v2`.
-  - [x] Remove stale local Phase 4 exports to avoid importing the old polling/callback workflow.
+  - [x] Remove stale Drive upload/poll nodes from the local Phase 4 export.
   - [ ] Confirm successful end-to-end browser upload after TikTok cookies/session are provided.
 
 ## Improvement Notes

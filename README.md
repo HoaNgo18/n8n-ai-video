@@ -35,10 +35,10 @@ Phase 4: Review + Publish
 - Browser automation: Playwright for Threads capture and TikTok upload.
 - Data source: Google Sheets tab `Threads`.
 - AI: Gemini nodes in n8n for post filtering, script cleanup, and captions.
-- TTS chain: VieNeu local TTS, then FPT.AI, edge-tts, gTTS, Windows SAPI, then silent fallback.
+- TTS: VieNeu only, with optional preset/reference voice registry.
 - Video rendering: ffmpeg and MoviePy.
 - Background downloader: `yt-dlp`.
-- Review channel: Telegram inline buttons plus Google Drive draft links.
+- Review channel: signed runner review links plus Telegram inline buttons.
 - Runtime paths: generated assets live under `runtime/` and are intentionally not committed.
 
 ## Repository Layout
@@ -63,8 +63,8 @@ n8n-ai-video/
 - A Threads account for mining and screenshots.
 - Google Sheets credentials.
 - Gemini API key for AI filtering/rewriting/captioning.
-- Optional FPT.AI key for paid Vietnamese TTS.
-- Optional Telegram bot and Google Drive credentials for Phase 4 review.
+- VieNeu model/cache access for local TTS.
+- Optional Telegram bot for Phase 4 review.
 - Optional TikTok account cookies/session for browser publishing.
 
 ## Setup
@@ -124,7 +124,7 @@ workflows/03-video-maker.json
 workflows/04-review&publish.json
 ```
 
-Phase 4 uses the runner helper endpoints plus Google Drive and Telegram nodes for review/publish callbacks.
+Phase 4 uses the runner review server plus Telegram nodes for review/publish callbacks.
 
 ## Google Sheet
 
@@ -177,7 +177,7 @@ Run Phase 2 in n8n to capture screenshots and clean text. It updates rows to `St
 
 Run Phase 3 in n8n to generate audio, render visuals, merge final video, and create a caption. It updates rows to `Status = Draft`.
 
-Run Phase 4 in n8n to send a review link to Telegram, process approve/reject callbacks, and publish approved drafts.
+Run Phase 4 in n8n to send a signed runner review link to Telegram, process approve/reject callbacks, and publish approved drafts.
 
 Useful logs:
 
@@ -193,9 +193,9 @@ docker compose build runner
 docker compose up -d runner
 ```
 
-## Ngrok For Telegram Callbacks
+## Ngrok For Phase 4 Review
 
-Use ngrok when Telegram needs to call your local n8n webhook.
+Use one ngrok tunnel to the runner. The runner serves the review video and forwards Telegram callbacks to n8n internally.
 
 1. Start n8n locally:
 
@@ -203,10 +203,10 @@ Use ngrok when Telegram needs to call your local n8n webhook.
 docker compose up -d
 ```
 
-2. Start an ngrok tunnel to n8n:
+2. Start an ngrok tunnel to the runner:
 
 ```powershell
-ngrok http 5678
+ngrok http 8000
 ```
 
 3. Copy the HTTPS forwarding URL, for example:
@@ -215,19 +215,37 @@ ngrok http 5678
 https://example.ngrok-free.app
 ```
 
-4. In n8n, use the production webhook URL for the Telegram callback node. For Phase 4 the path is usually:
+4. Set `REVIEW_PUBLIC_BASE_URL` in `.env` to the HTTPS forwarding URL:
 
-```text
-https://example.ngrok-free.app/webhook/phase4-review-callback
+```env
+REVIEW_PUBLIC_BASE_URL=https://example.ngrok-free.app
 ```
 
-5. Set the Telegram bot webhook:
+5. Keep runner callback forwarding pointed at n8n:
+
+```env
+N8N_PHASE4_CALLBACK_URL=http://n8n:5678/webhook/phase4-review-callback
+```
+
+6. Restart runner after changing `.env`:
 
 ```powershell
-curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/webhook/phase4-review-callback"
+docker compose up -d runner
 ```
 
-For n8n test mode, use the temporary `/webhook-test/...` URL shown by the Webhook node while it is listening.
+7. Set the Telegram bot webhook to the runner callback endpoint:
+
+```powershell
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/phase4/telegram-callback"
+```
+
+For n8n test mode, temporarily set `N8N_PHASE4_CALLBACK_URL` to the `/webhook-test/...` URL inside the Docker network, then switch it back to `/webhook/...` when the workflow is active.
+
+Test local review link creation:
+
+```powershell
+docker compose exec -T runner python src/draft_review_helper.py --id "POST_ID" --video-path "runtime/data/videos/YYYY-MM-DD/POST_ID/final.mp4" --caption "test caption"
+```
 
 ## Background Videos
 
@@ -266,11 +284,13 @@ Run this command from the repo directory that contains `docker-compose.yml`.
 
 ## Voiceover
 
-The current fallback chain is:
+The current TTS engine is VieNeu only:
 
-```text
-VieNeu -> FPT.AI -> edge-tts -> gTTS -> Windows SAPI -> silent
+```env
+TTS_ENGINE_ORDER=vieneu
 ```
+
+If another engine is accidentally left in `TTS_ENGINE_ORDER`, the runner ignores it and still uses VieNeu.
 
 VieNeu runs locally after the model is downloaded. To clone a specific voice, set:
 
@@ -278,7 +298,89 @@ VieNeu runs locally after the model is downloaded. To clone a specific voice, se
 VIENEU_VOICE_REF=runtime/assets/voice_sample.wav
 ```
 
+For 3-4 rotating author voices with VieNeu, set `TTS_AUTHOR_VOICES` to a
+comma-separated voice registry. Each unique author is assigned one voice and
+keeps that voice for later segments:
+
+```env
+TTS_ENGINE_ORDER=vieneu
+TTS_AUTHOR_VOICES=preset:voice_1,preset:voice_2,preset:voice_3,preset:voice_4
+```
+
+You can also use reference audio files instead of presets:
+
+```env
+TTS_AUTHOR_VOICES=ref:runtime/assets/voices/a.wav,ref:runtime/assets/voices/b.wav,ref:runtime/assets/voices/c.wav
+```
+
 If disk space on C or D is tight, keep model/cache paths on E using the cache environment variables in `.env.example`.
+
+## Background Music
+
+Put reusable instrumental tracks in:
+
+```text
+runtime/assets/music/lofi/
+```
+
+Enable low-volume music under the narration:
+
+```env
+BACKGROUND_MUSIC_ENABLED=true
+BACKGROUND_MUSIC_DIR=runtime/assets/music/lofi
+BACKGROUND_MUSIC_PICK=hash
+BACKGROUND_MUSIC_VOLUME=0.08
+BACKGROUND_MUSIC_DUCKING=true
+```
+
+The merge step loops the track if needed, trims it to the narration duration,
+adds a short fade, and ducks it under the AI voice.
+
+For short-form pacing, keep narration around 60-75 seconds and avoid going past
+90 seconds unless the post is unusually strong:
+
+```env
+AUDIO_MAX_SEGMENTS=7
+AUDIO_MAX_POST_CHARS=220
+AUDIO_MAX_COMMENT_CHARS=260
+```
+
+## Runtime Cleanup
+
+Dry-run old runtime cleanup:
+
+```powershell
+docker compose exec -T runner python scripts/cleanup_runtime.py --days 14
+```
+
+Delete files only after reviewing the dry-run report:
+
+```powershell
+docker compose exec -T runner python scripts/cleanup_runtime.py --days 14 --apply
+```
+
+The cleanup script reads Google Sheets first and skips files still referenced by sheet cells.
+If Google Sheets is not configured in the runner yet, use temp-only dry-run mode:
+
+```powershell
+docker compose exec -T runner python scripts/cleanup_runtime.py --days 14 --without-sheet
+```
+
+## Quality Check
+
+Check the latest final video:
+
+```powershell
+docker compose exec -T runner python scripts/quality_check.py
+```
+
+Check a specific post ID:
+
+```powershell
+docker compose exec -T runner python scripts/quality_check.py --id "POST_ID"
+```
+
+The check verifies final video dimensions, audio stream presence, duration drift between final/visual/audio, and audio timing manifest sanity when available.
 
 ## Git Notes
 

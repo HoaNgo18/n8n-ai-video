@@ -133,8 +133,8 @@
                       "name":  "Gemini Rewrite Request",
                       "credentials":  {
                                           "googlePalmApi":  {
-                                                                "id":  "hudWq13w7XVtO8Q6",
-                                                                "name":  "Google Gemini(PaLM) Api account 2"
+                                                                "id":  "G4dMTEqzuDjrQ6aY",
+                                                                "name":  "Google Gemini(PaLM) Api account"
                                                             }
                                       }
                   },

@@ -1,531 +1,551 @@
 {
-  "nodes": [
-    {
-      "parameters": {},
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
-      "position": [
-        1648,
-        1008
-      ],
-      "id": "93ff9ba7-f52d-4e8a-9de4-b309ab1a01db",
-      "name": "Manual Test Trigger"
-    },
-    {
-      "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "field": "hours",
-              "hoursInterval": 6
-            }
-          ]
-        }
-      },
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.3,
-      "position": [
-        1648,
-        1184
-      ],
-      "id": "1967f7fd-8878-4c6a-8a18-d12680015c48",
-      "name": "Scheduler (every 6h)"
-    },
-    {
-      "parameters": {
-        "url": "http://host.docker.internal:8000/phase1/threads-miner",
-        "method": "POST",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        1936,
-        1008
-      ],
-      "id": "af40cc8d-a985-4c44-beb9-aded0e34b4ea",
-      "name": "Run Threads Miner"
-    },
-    {
-      "parameters": {
-        "jsCode": "const payload = $input.first().json;\nconst posts = Array.isArray(payload.posts) ? payload.posts : [];\nif (!Array.isArray(posts)) {\n  throw new Error('Threads miner must return posts as a JSON array.');\n}\n\nreturn posts\n  .filter(p => p && p.id && p.url)\n  .map(p => ({ json: p }));"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2160,
-        1008
-      ],
-      "id": "daa3c9f4-f436-411e-b2aa-b081cb35f1c0",
-      "name": "Parse JSON Output"
-    },
-    {
-      "parameters": {
-        "jsCode": "function cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nconst env = (typeof process !== 'undefined' && process.env) ? process.env : {};\nconst enabled = ['1', 'true', 'yes'].includes(String(env.THREADS_CLASSIFIER_ENABLED || 'true').trim().toLowerCase());\nconst model = String(env.THREADS_CLASSIFIER_MODEL || 'gemini-2.5-flash-lite').trim();\n\nreturn $input.all().map(item => {\n  const preview = cleanText(item.json.text_preview || '');\n  const fitScore = Number(item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(item.json.content_fit_tags) ? item.json.content_fit_tags : [];\n  const engagementScore = Number(item.json.engagement_score || 0);\n  const engagementMetrics = Array.isArray(item.json.engagement_metrics) ? item.json.engagement_metrics : [];\n  const strongestMetric = Number(item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(item.json.engagement_metric_count || 0);\n\n  item.json._classifier = {\n    enabled,\n    model,\n    preview,\n    fitScore,\n    fitTags,\n    engagementScore,\n    engagementMetrics,\n    strongestMetric,\n    metricCount,\n    prompt: [\n      'Ban la bo loc noi dung cho kenh video ngan tieng Viet.',\n      'Hay danh gia preview cua mot bai Threads xem co nen dua vao pipeline lam video binh luan/storytime dang hot khong.',\n      'CHI GIU bai co it nhat mot trong cac diem manh: tranh luan ro, cau hoi mo de nguoi xem binh luan, xung dot/plot twist, van de xa hoi dang nong, hoac bai hoc/kinh nghiem co tinh bat ngo va khong bi self-promo.',\n      'discussion phai co y kien trai chieu hoac cau hoi that su dang ban. story_hot phai co dien bien gay to mo, drama, plot twist, rui ro, sai lam, ket qua bat ngo, hoac bai hoc khien nguoi xem muon nghe tiep. topic_hot phai la van de cong chung co kha nang gay tranh luan.',\n      'BAT BUOC reject neu preview chi la ke hanh trinh ca nhan truyen cam hung, quang ba podcast/kenh/brand, cam on/chia se chung chung, meo nghe nghiep qua hien lanh, hoac bai khong tao duoc cau hoi binh luan ro rang.',\n      'BAT BUOC reject neu strongest_metric < 1000 hoac engagement chu yeu la tong nhieu metric nho, tru khi noi dung cuc ky gay tranh luan/viral.',\n      'Duoc phep dung fit score va engagement lam ngu canh phu, nhung quyet dinh chinh phai dua tren kha nang giu chan nguoi xem va tao binh luan.',\n      'Tra ve DUY NHAT mot JSON hop le theo schema: {\"decision\":\"keep|reject\",\"angle\":\"discussion|story_hot|topic_hot|reject\",\"confidence\":0.0,\"reason\":\"...\"}.',\n      'reason phai ngan gon, neu reject thi noi ro ly do chinh.',\n    ].join(' '),\n  };\n\n  return item;\n});"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2384,
-        1008
-      ],
-      "id": "0ff09081-2a35-4b4d-a611-345cb4de6ab5",
-      "name": "Prepare AI Classifier Payload"
-    },
-    {
-      "parameters": {
-        "resource": "text",
-        "operation": "message",
-        "modelId": {
-          "__rl": true,
-          "mode": "id",
-          "value": "={{ $json._classifier.model ? 'models/' + $json._classifier.model.replace(/^models\\//, '') : 'models/gemini-2.5-flash-lite' }}"
-        },
-        "messages": {
-          "values": [
-            {
-              "content": "={{ $json._classifier.prompt + '\\n\\nTEXT_PREVIEW:\\n' + ($json._classifier.preview || '') + '\\n\\nFIT_SCORE: ' + $json._classifier.fitScore + '\\nFIT_TAGS: ' + (($json._classifier.fitTags || []).join(', ') || 'none') + '\\nENGAGEMENT_SCORE: ' + $json._classifier.engagementScore + '\\nENGAGEMENT_METRICS: ' + JSON.stringify($json._classifier.engagementMetrics || []) + '\\nSTRONGEST_METRIC: ' + ($json._classifier.strongestMetric || 0) + '\\nMETRIC_COUNT: ' + ($json._classifier.metricCount || 0) + '\\n\\nNhac lai: chi tra ve JSON hop le, khong them giai thich.' }}",
-              "role": "user"
-            }
-          ]
-        },
-        "simplify": false,
-        "jsonOutput": true,
-        "builtInTools": {},
-        "options": {
-          "maxOutputTokens": 300,
-          "temperature": 0.2,
-          "topP": 0.8
-        }
-      },
-      "type": "@n8n/n8n-nodes-langchain.googleGemini",
-      "typeVersion": 1.1,
-      "position": [
-        2608,
-        1008
-      ],
-      "id": "0c943854-b5c2-424f-8273-2414707fe48b",
-      "name": "Gemini Content Classifier",
-      "onError": "continueRegularOutput",
-      "credentials": {
-        "googlePalmApi": {
-          "id": "hudWq13w7XVtO8Q6",
-          "name": "Google Gemini(PaLM) Api account 2"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "mode": "combine",
-        "combineBy": "combineByPosition",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3.2,
-      "position": [
-        2832,
-        1136
-      ],
-      "id": "34592b31-9bb3-4869-a1bf-418c2548dd9d",
-      "name": "Merge Classifier Result"
-    },
-    {
-      "parameters": {
-        "jsCode": "function cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction parseJsonCandidate(text) {\n  const cleaned = cleanText(text);\n  if (!cleaned) return null;\n\n  const fencedMatch = cleaned.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  const jsonSource = fencedMatch ? fencedMatch[1] : cleaned;\n  const braceMatch = jsonSource.match(/\\{[\\s\\S]*\\}/);\n  const candidate = braceMatch ? braceMatch[0] : jsonSource;\n\n  try {\n    const parsed = JSON.parse(candidate);\n    return parsed && typeof parsed === 'object' ? parsed : null;\n  } catch (error) {\n    return null;\n  }\n}\n\nfunction extractTextDeep(value, bucket = []) {\n  if (typeof value === 'string') {\n    const cleaned = cleanText(value);\n    if (cleaned) bucket.push(cleaned);\n    return bucket;\n  }\n\n  if (!value || typeof value !== 'object') return bucket;\n  if (Array.isArray(value)) {\n    value.forEach(entry => extractTextDeep(entry, bucket));\n    return bucket;\n  }\n\n  Object.values(value).forEach(entry => {\n    if (typeof entry === 'string') {\n      const cleaned = cleanText(entry);\n      if (cleaned) bucket.push(cleaned);\n    } else if (entry && typeof entry === 'object') {\n      extractTextDeep(entry, bucket);\n    }\n  });\n  return bucket;\n}\n\nfunction extractClassifierDecision(data) {\n  if (!data || typeof data !== 'object') return null;\n\n  const direct = [data.output, data.text, data.content, data.message, data.response].filter(Boolean);\n  for (const candidate of direct) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  for (const candidate of extractTextDeep(data, [])) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  return null;\n}\n\nconst kept = [];\n\nfor (const item of $input.all()) {\n  const classifier = item.json._classifier || {};\n  const preview = cleanText(classifier.preview || item.json.text_preview || '');\n  const fitScore = Number(classifier.fitScore || item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(classifier.fitTags || item.json.content_fit_tags) ? (classifier.fitTags || item.json.content_fit_tags) : [];\n  const strongestMetric = Number(classifier.strongestMetric || item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(classifier.metricCount || item.json.engagement_metric_count || 0);\n  const classifierEnabled = classifier.enabled !== false;\n  const fallbackKeep = fitScore >= 5 && preview.length >= 140 && metricCount >= 2 && strongestMetric >= 1000 && (fitTags.includes('discussion') || fitTags.includes('story') || fitTags.includes('topic-hot'));\n  const parsed = classifierEnabled ? extractClassifierDecision(item.json) : null;\n\n  let decision = fallbackKeep ? 'keep' : 'reject';\n  let angle = fitTags.includes('discussion') ? 'discussion' : (fitTags.includes('story') ? 'story_hot' : (fitTags.includes('topic-hot') ? 'topic_hot' : 'reject'));\n  let confidence = fallbackKeep ? 0.6 : 0.35;\n  let reason = fallbackKeep\n    ? `heuristic keep fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} tags=${fitTags.join(',') || 'none'}`\n    : `heuristic reject fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} preview_too_weak`;\n\n  if (strongestMetric < 1000) {\n    decision = 'reject';\n    angle = 'reject';\n    confidence = Math.max(confidence, 0.7);\n    reason = `reject strongest_metric_under_1000 strongest=${strongestMetric} total=${classifier.engagementScore || item.json.engagement_score || 0}`;\n  } else if (!classifierEnabled) {\n    reason = `ai disabled; ${reason}`;\n  } else if (parsed) {\n    const parsedDecision = cleanText(parsed.decision || '').toLowerCase();\n    const parsedAngle = cleanText(parsed.angle || '').toLowerCase();\n    const parsedReason = cleanText(parsed.reason || '');\n    const parsedConfidence = Number(parsed.confidence || 0);\n    if ((parsedDecision === 'keep' || parsedDecision === 'reject') && ['discussion', 'story_hot', 'topic_hot', 'reject'].includes(parsedAngle || 'reject')) {\n      decision = parsedDecision;\n      angle = parsedAngle || (parsedDecision === 'keep' ? 'discussion' : 'reject');\n      confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : confidence;\n      reason = parsedReason || reason;\n    }\n  } else {\n    reason = `ai fallback; ${reason}`;\n  }\n\n  item.json._classifier_decision = decision;\n  item.json._classifier_angle = angle;\n  item.json._classifier_confidence = Math.max(0, Math.min(1, confidence || 0));\n  item.json._classifier_reason = reason;\n\n  if (decision === 'keep' && ['discussion', 'story_hot', 'topic_hot'].includes(angle)) {\n    kept.push(item);\n  }\n}\n\nreturn kept;"
-      },
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        3056,
-        1136
-      ],
-      "id": "9f347b2d-fae5-4424-b0aa-1731c3c67652",
-      "name": "Finalize AI Classifier"
-    },
-    {
-      "parameters": {
-        "assignments": {
-          "assignments": [
-            {
-              "id": "f1",
-              "name": "ID",
-              "value": "={{ $json.id }}",
-              "type": "string"
-            },
-            {
-              "id": "f2",
-              "name": "Source_URL",
-              "value": "={{ $json.url }}",
-              "type": "string"
-            },
-            {
-              "id": "f3",
-              "name": "Collected_At",
-              "value": "={{ $now.format('yyyy-MM-dd HH:mm') }}",
-              "type": "string"
-            },
-            {
-              "id": "f4",
-              "name": "Status",
-              "value": "Pending",
-              "type": "string"
-            },
-            {
-              "id": "f5",
-              "name": "Note",
-              "value": "={{ 'score=' + ($json.engagement_score || 0) + ' fit=' + ($json.content_fit_score || 0) + ' strongest=' + ($json.engagement_strongest_metric || 0) + ' metricCount=' + ($json.engagement_metric_count || 0) + ' ai=' + ($json._classifier_angle || 'unknown') + ' conf=' + ($json._classifier_confidence || 0) + ' metrics=' + JSON.stringify($json.engagement_metrics || []) + ' reason=' + ($json._classifier_reason || '') + ' | ' + ($json.text_preview || '') }}",
-              "type": "string"
-            }
-          ]
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 3.4,
-      "position": [
-        3280,
-        1136
-      ],
-      "id": "36fa86c1-378f-4f4f-99d5-df8fa5a93f8f",
-      "name": "Normalize Sheet Row"
-    },
-    {
-      "parameters": {
-        "authentication": "serviceAccount",
-        "documentId": {
-          "__rl": true,
-          "value": "={{ $env.GOOGLE_SHEET_ID }}",
-          "mode": "list",
-          "cachedResultName": "GOOGLE_SHEET_ID",
-          "cachedResultUrl": ""
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "Threads",
-          "mode": "name"
-        },
-        "operation": "read",
-        "range": "Threads!A:F",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.7,
-      "position": [
-        2160,
-        1248
-      ],
-      "id": "4f03d161-ecb0-40c7-9b63-a21eae302b65",
-      "name": "Read Current Sheet",
-      "credentials": {
-        "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
-          "name": "Google Sheets account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "mode": "combine",
-        "combineBy": "combineByFields",
-        "fieldsToMatchString": "ID",
-        "joinMode": "keepNonMatches",
-        "outputDataFrom": "input1",
-        "options": {}
-      },
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3.2,
-      "position": [
-        3616,
-        1120
-      ],
-      "id": "1ae481c6-c58a-40be-ae4b-c9a2c33ab0b5",
-      "name": "Deduplicate by ID"
-    },
-    {
-      "parameters": {
-        "authentication": "serviceAccount",
-        "operation": "append",
-        "documentId": {
-          "__rl": true,
-          "value": "={{ $env.GOOGLE_SHEET_ID }}",
-          "mode": "list",
-          "cachedResultName": "GOOGLE_SHEET_ID",
-          "cachedResultUrl": ""
-        },
-        "sheetName": {
-          "__rl": true,
-          "value": "Threads",
-          "mode": "name"
-        },
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "ID": "={{ $json.ID }}",
-            "Source_URL": "={{ $json.Source_URL }}",
-            "Collected_At": "={{ $json.Collected_At }}",
-            "Status": "={{ $json.Status }}",
-            "Note": "={{ $json.Note }}"
-          },
-          "matchingColumns": [],
-          "schema": [
-            {
-              "id": "ID",
-              "displayName": "ID",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "Source_URL",
-              "displayName": "Source_URL",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "Collected_At",
-              "displayName": "Collected_At",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "Status",
-              "displayName": "Status",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "Screenshots",
-              "displayName": "Screenshots",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Extracted_Content",
-              "displayName": "Extracted_Content",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Narrator_Script",
-              "displayName": "Narrator_Script",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Video_Path",
-              "displayName": "Video_Path",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Published_URL",
-              "displayName": "Published_URL",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Note",
-              "displayName": "Note",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            }
-          ],
-          "attemptToConvertTypes": false,
-          "convertFieldsToString": false
-        },
-        "options": {}
-      },
-      "type": "n8n-nodes-base.googleSheets",
-      "typeVersion": 4.7,
-      "position": [
-        3824,
-        1120
-      ],
-      "id": "e504d7a4-79fa-4713-87e9-5ef90bfabcce",
-      "name": "Append to Sheet",
-      "credentials": {
-        "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
-          "name": "Google Sheets account"
-        }
-      }
-    }
-  ],
-  "connections": {
-    "Manual Test Trigger": {
-      "main": [
-        [
-          {
-            "node": "Run Threads Miner",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Read Current Sheet",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Scheduler (every 6h)": {
-      "main": [
-        [
-          {
-            "node": "Run Threads Miner",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Read Current Sheet",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Run Threads Miner": {
-      "main": [
-        [
-          {
-            "node": "Parse JSON Output",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Parse JSON Output": {
-      "main": [
-        [
-          {
-            "node": "Prepare AI Classifier Payload",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prepare AI Classifier Payload": {
-      "main": [
-        [
-          {
-            "node": "Merge Classifier Result",
-            "type": "main",
-            "index": 1
-          },
-          {
-            "node": "Gemini Content Classifier",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Gemini Content Classifier": {
-      "main": [
-        [
-          {
-            "node": "Merge Classifier Result",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Merge Classifier Result": {
-      "main": [
-        [
-          {
-            "node": "Finalize AI Classifier",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Finalize AI Classifier": {
-      "main": [
-        [
-          {
-            "node": "Normalize Sheet Row",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Normalize Sheet Row": {
-      "main": [
-        [
-          {
-            "node": "Deduplicate by ID",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Read Current Sheet": {
-      "main": [
-        [
-          {
-            "node": "Deduplicate by ID",
-            "type": "main",
-            "index": 1
-          }
-        ]
-      ]
-    },
-    "Deduplicate by ID": {
-      "main": [
-        [
-          {
-            "node": "Append to Sheet",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
-  },
-  "pinData": {},
-  "meta": {
-    "instanceId": "6c30afaa852f74e02f831710b585be20efcca194df2402dde964823fcb63a143"
-  }
+    "nodes":  [
+                  {
+                      "parameters":  {
+
+                                     },
+                      "type":  "n8n-nodes-base.manualTrigger",
+                      "typeVersion":  1,
+                      "position":  [
+                                       1648,
+                                       1008
+                                   ],
+                      "id":  "93ff9ba7-f52d-4e8a-9de4-b309ab1a01db",
+                      "name":  "Manual Test Trigger"
+                  },
+                  {
+                      "parameters":  {
+                                         "rule":  {
+                                                      "interval":  [
+                                                                       {
+                                                                           "field":  "hours",
+                                                                           "hoursInterval":  6
+                                                                       }
+                                                                   ]
+                                                  }
+                                     },
+                      "type":  "n8n-nodes-base.scheduleTrigger",
+                      "typeVersion":  1.3,
+                      "position":  [
+                                       1648,
+                                       1184
+                                   ],
+                      "id":  "1967f7fd-8878-4c6a-8a18-d12680015c48",
+                      "name":  "Scheduler (every 6h)"
+                  },
+                  {
+                      "parameters":  {
+                                         "url":  "http://host.docker.internal:8000/phase1/threads-miner",
+                                         "method":  "POST",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "type":  "n8n-nodes-base.httpRequest",
+                      "typeVersion":  4.4,
+                      "position":  [
+                                       1936,
+                                       1008
+                                   ],
+                      "id":  "af40cc8d-a985-4c44-beb9-aded0e34b4ea",
+                      "name":  "Run Threads Miner"
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "const payload = $input.first().json;\nconst posts = Array.isArray(payload.posts) ? payload.posts : [];\nif (!Array.isArray(posts)) {\n  throw new Error(\u0027Threads miner must return posts as a JSON array.\u0027);\n}\n\nreturn posts\n  .filter(p =\u003e p \u0026\u0026 p.id \u0026\u0026 p.url)\n  .map(p =\u003e ({ json: p }));"
+                                     },
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       2160,
+                                       1008
+                                   ],
+                      "id":  "daa3c9f4-f436-411e-b2aa-b081cb35f1c0",
+                      "name":  "Parse JSON Output"
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "function cleanText(value) {\n  return String(value || \u0027\u0027).replace(/\\s+/g, \u0027 \u0027).trim();\n}\n\nconst env = (typeof process !== \u0027undefined\u0027 \u0026\u0026 process.env) ? process.env : {};\nconst enabled = [\u00271\u0027, \u0027true\u0027, \u0027yes\u0027].includes(String(env.THREADS_CLASSIFIER_ENABLED || \u0027true\u0027).trim().toLowerCase());\nconst model = String(env.THREADS_CLASSIFIER_MODEL || \u0027gemini-2.5-flash-lite\u0027).trim();\nconst trendBrief = cleanText(env.THREADS_TREND_BRIEF || \u0027\u0027);\nconst priorityTopics = cleanText(env.THREADS_PRIORITY_TOPICS || \u0027\u0027);\n\nreturn $input.all().map(item =\u003e {\n  const preview = cleanText(item.json.text_preview || \u0027\u0027);\n  const fitScore = Number(item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(item.json.content_fit_tags) ? item.json.content_fit_tags : [];\n  const engagementScore = Number(item.json.engagement_score || 0);\n  const engagementMetrics = Array.isArray(item.json.engagement_metrics) ? item.json.engagement_metrics : [];\n  const strongestMetric = Number(item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(item.json.engagement_metric_count || 0);\n\n  item.json._classifier = {\n    enabled,\n    model,\n    preview,\n    fitScore,\n    fitTags,\n    engagementScore,\n    engagementMetrics,\n    strongestMetric,\n    metricCount,\n    trendBrief,\n    priorityTopics,\n    prompt: [\n      \u0027Ban la bo loc noi dung cho kenh video ngan tieng Viet.\u0027,\n      \u0027Hay danh gia preview cua mot bai Threads xem co nen dua vao pipeline lam video binh luan/storytime dang hot khong.\u0027,\n      \u0027CHI GIU bai co it nhat mot trong cac diem manh: tranh luan ro, cau hoi mo de nguoi xem binh luan, xung dot/plot twist, van de xa hoi dang nong, hoac bai hoc/kinh nghiem co tinh bat ngo va khong bi self-promo.\u0027,\n      \u0027discussion phai co y kien trai chieu hoac cau hoi that su dang ban. story_hot phai co dien bien gay to mo, drama, plot twist, rui ro, sai lam, ket qua bat ngo, hoac bai hoc khien nguoi xem muon nghe tiep. topic_hot phai la van de cong chung co kha nang gay tranh luan.\u0027,\n      trendBrief ? \u0027CURRENT_TREND_BRIEF: \u0027 + trendBrief : \u0027CURRENT_TREND_BRIEF: none\u0027,\n      priorityTopics ? \u0027PRIORITY_TOPICS: \u0027 + priorityTopics : \u0027PRIORITY_TOPICS: none\u0027,\n      \u0027Uu tien bai co mass appeal: anh huong tien bac, nha cua, giao thong, cong viec, gia dinh, suc khoe, giao duc, chinh sach, do thi, an toan, tam linh/kinh di, hoac van de nhieu nguoi Viet co the lien he ngay.\u0027,\n      \u0027BAT BUOC reject neu preview chi hot trong fandom/cong dong nho, drama idol/nhom nhac, cau chuyen noi bo, hoac engagement cao nhung nguoi ngoai khong co ly do quan tam.\u0027,\n      \u0027BAT BUOC reject neu preview chi la ke hanh trinh ca nhan truyen cam hung, quang ba podcast/kenh/brand, cam on/chia se chung chung, meo nghe nghiep qua hien lanh, hoac bai khong tao duoc cau hoi binh luan ro rang.\u0027,\n      \u0027BAT BUOC reject neu strongest_metric \u003c 1000 hoac engagement chu yeu la tong nhieu metric nho, tru khi noi dung cuc ky gay tranh luan/viral.\u0027,\n      \u0027Duoc phep dung fit score va engagement lam ngu canh phu, nhung quyet dinh chinh phai dua tren kha nang giu chan nguoi xem va tao binh luan.\u0027,\n      \u0027Tra ve DUY NHAT mot JSON hop le theo schema: {\"decision\":\"keep|reject\",\"angle\":\"discussion|story_hot|topic_hot|reject\",\"confidence\":0.0,\"reason\":\"...\"}.\u0027,\n      \u0027reason phai ngan gon, neu reject thi noi ro ly do chinh.\u0027,\n    ].join(\u0027 \u0027),\n  };\n\n  return item;\n});"
+                                     },
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       2384,
+                                       1008
+                                   ],
+                      "id":  "0ff09081-2a35-4b4d-a611-345cb4de6ab5",
+                      "name":  "Prepare AI Classifier Payload"
+                  },
+                  {
+                      "parameters":  {
+                                         "resource":  "text",
+                                         "operation":  "message",
+                                         "modelId":  {
+                                                         "__rl":  true,
+                                                         "mode":  "id",
+                                                         "value":  "={{ $json._classifier.model ? \u0027models/\u0027 + $json._classifier.model.replace(/^models\\//, \u0027\u0027) : \u0027models/gemini-2.5-flash-lite\u0027 }}"
+                                                     },
+                                         "messages":  {
+                                                          "values":  [
+                                                                         {
+                                                                             "content":  "={{ $json._classifier.prompt + \u0027\\n\\nTEXT_PREVIEW:\\n\u0027 + ($json._classifier.preview || \u0027\u0027) + \u0027\\n\\nFIT_SCORE: \u0027 + $json._classifier.fitScore + \u0027\\nFIT_TAGS: \u0027 + (($json._classifier.fitTags || []).join(\u0027, \u0027) || \u0027none\u0027) + \u0027\\nENGAGEMENT_SCORE: \u0027 + $json._classifier.engagementScore + \u0027\\nENGAGEMENT_METRICS: \u0027 + JSON.stringify($json._classifier.engagementMetrics || []) + \u0027\\nSTRONGEST_METRIC: \u0027 + ($json._classifier.strongestMetric || 0) + \u0027\\nMETRIC_COUNT: \u0027 + ($json._classifier.metricCount || 0) + \u0027\\n\\nNhac lai: chi tra ve JSON hop le, khong them giai thich.\u0027 }}",
+                                                                             "role":  "user"
+                                                                         }
+                                                                     ]
+                                                      },
+                                         "simplify":  false,
+                                         "jsonOutput":  true,
+                                         "builtInTools":  {
+
+                                                          },
+                                         "options":  {
+                                                         "maxOutputTokens":  300,
+                                                         "temperature":  0.2,
+                                                         "topP":  0.8
+                                                     }
+                                     },
+                      "type":  "@n8n/n8n-nodes-langchain.googleGemini",
+                      "typeVersion":  1.1,
+                      "position":  [
+                                       2608,
+                                       1008
+                                   ],
+                      "id":  "0c943854-b5c2-424f-8273-2414707fe48b",
+                      "name":  "Gemini Content Classifier",
+                      "onError":  "continueRegularOutput",
+                      "credentials":  {
+                                          "googlePalmApi":  {
+                                                                "id":  "G4dMTEqzuDjrQ6aY",
+                                                                "name":  "Google Gemini(PaLM) Api account"
+                                                            }
+                                      }
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "combine",
+                                         "combineBy":  "combineByPosition",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "type":  "n8n-nodes-base.merge",
+                      "typeVersion":  3.2,
+                      "position":  [
+                                       2832,
+                                       1136
+                                   ],
+                      "id":  "34592b31-9bb3-4869-a1bf-418c2548dd9d",
+                      "name":  "Merge Classifier Result"
+                  },
+                  {
+                      "parameters":  {
+                                         "jsCode":  "function cleanText(value) {\n  return String(value || \u0027\u0027).replace(/\\s+/g, \u0027 \u0027).trim();\n}\n\nfunction parseJsonCandidate(text) {\n  const cleaned = cleanText(text);\n  if (!cleaned) return null;\n\n  const fencedMatch = cleaned.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  const jsonSource = fencedMatch ? fencedMatch[1] : cleaned;\n  const braceMatch = jsonSource.match(/\\{[\\s\\S]*\\}/);\n  const candidate = braceMatch ? braceMatch[0] : jsonSource;\n\n  try {\n    const parsed = JSON.parse(candidate);\n    return parsed \u0026\u0026 typeof parsed === \u0027object\u0027 ? parsed : null;\n  } catch (error) {\n    return null;\n  }\n}\n\nfunction extractTextDeep(value, bucket = []) {\n  if (typeof value === \u0027string\u0027) {\n    const cleaned = cleanText(value);\n    if (cleaned) bucket.push(cleaned);\n    return bucket;\n  }\n\n  if (!value || typeof value !== \u0027object\u0027) return bucket;\n  if (Array.isArray(value)) {\n    value.forEach(entry =\u003e extractTextDeep(entry, bucket));\n    return bucket;\n  }\n\n  Object.values(value).forEach(entry =\u003e {\n    if (typeof entry === \u0027string\u0027) {\n      const cleaned = cleanText(entry);\n      if (cleaned) bucket.push(cleaned);\n    } else if (entry \u0026\u0026 typeof entry === \u0027object\u0027) {\n      extractTextDeep(entry, bucket);\n    }\n  });\n  return bucket;\n}\n\nfunction extractClassifierDecision(data) {\n  if (!data || typeof data !== \u0027object\u0027) return null;\n\n  const direct = [data.output, data.text, data.content, data.message, data.response].filter(Boolean);\n  for (const candidate of direct) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  for (const candidate of extractTextDeep(data, [])) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  return null;\n}\n\nconst kept = [];\n\nfor (const item of $input.all()) {\n  const classifier = item.json._classifier || {};\n  const preview = cleanText(classifier.preview || item.json.text_preview || \u0027\u0027);\n  const fitScore = Number(classifier.fitScore || item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(classifier.fitTags || item.json.content_fit_tags) ? (classifier.fitTags || item.json.content_fit_tags) : [];\n  const strongestMetric = Number(classifier.strongestMetric || item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(classifier.metricCount || item.json.engagement_metric_count || 0);\n  const classifierEnabled = classifier.enabled !== false;\n  const fallbackKeep = fitScore \u003e= 5 \u0026\u0026 preview.length \u003e= 140 \u0026\u0026 metricCount \u003e= 2 \u0026\u0026 strongestMetric \u003e= 1000 \u0026\u0026 (fitTags.includes(\u0027discussion\u0027) || fitTags.includes(\u0027story\u0027) || fitTags.includes(\u0027topic-hot\u0027) || fitTags.includes(\u0027priority-topic\u0027) || fitTags.includes(\u0027mass-appeal\u0027));\n  const parsed = classifierEnabled ? extractClassifierDecision(item.json) : null;\n\n  let decision = fallbackKeep ? \u0027keep\u0027 : \u0027reject\u0027;\n  let angle = fitTags.includes(\u0027discussion\u0027) ? \u0027discussion\u0027 : (fitTags.includes(\u0027story\u0027) ? \u0027story_hot\u0027 : ((fitTags.includes(\u0027topic-hot\u0027) || fitTags.includes(\u0027priority-topic\u0027) || fitTags.includes(\u0027mass-appeal\u0027)) ? \u0027topic_hot\u0027 : \u0027reject\u0027));\n  let confidence = fallbackKeep ? 0.6 : 0.35;\n  let reason = fallbackKeep\n    ? `heuristic keep fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} tags=${fitTags.join(\u0027,\u0027) || \u0027none\u0027}`\n    : `heuristic reject fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} preview_too_weak`;\n\n  if (strongestMetric \u003c 1000) {\n    decision = \u0027reject\u0027;\n    angle = \u0027reject\u0027;\n    confidence = Math.max(confidence, 0.7);\n    reason = `reject strongest_metric_under_1000 strongest=${strongestMetric} total=${classifier.engagementScore || item.json.engagement_score || 0}`;\n  } else if (!classifierEnabled) {\n    reason = `ai disabled; ${reason}`;\n  } else if (parsed) {\n    const parsedDecision = cleanText(parsed.decision || \u0027\u0027).toLowerCase();\n    const parsedAngle = cleanText(parsed.angle || \u0027\u0027).toLowerCase();\n    const parsedReason = cleanText(parsed.reason || \u0027\u0027);\n    const parsedConfidence = Number(parsed.confidence || 0);\n    if ((parsedDecision === \u0027keep\u0027 || parsedDecision === \u0027reject\u0027) \u0026\u0026 [\u0027discussion\u0027, \u0027story_hot\u0027, \u0027topic_hot\u0027, \u0027reject\u0027].includes(parsedAngle || \u0027reject\u0027)) {\n      decision = parsedDecision;\n      angle = parsedAngle || (parsedDecision === \u0027keep\u0027 ? \u0027discussion\u0027 : \u0027reject\u0027);\n      confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : confidence;\n      reason = parsedReason || reason;\n    }\n  } else {\n    reason = `ai fallback; ${reason}`;\n  }\n\n  item.json._classifier_decision = decision;\n  item.json._classifier_angle = angle;\n  item.json._classifier_confidence = Math.max(0, Math.min(1, confidence || 0));\n  item.json._classifier_reason = reason;\n\n  if (decision === \u0027keep\u0027 \u0026\u0026 [\u0027discussion\u0027, \u0027story_hot\u0027, \u0027topic_hot\u0027].includes(angle)) {\n    kept.push(item);\n  }\n}\n\nreturn kept;"
+                                     },
+                      "type":  "n8n-nodes-base.code",
+                      "typeVersion":  2,
+                      "position":  [
+                                       3056,
+                                       1136
+                                   ],
+                      "id":  "9f347b2d-fae5-4424-b0aa-1731c3c67652",
+                      "name":  "Finalize AI Classifier"
+                  },
+                  {
+                      "parameters":  {
+                                         "assignments":  {
+                                                             "assignments":  [
+                                                                                 {
+                                                                                     "id":  "f1",
+                                                                                     "name":  "ID",
+                                                                                     "value":  "={{ $json.id }}",
+                                                                                     "type":  "string"
+                                                                                 },
+                                                                                 {
+                                                                                     "id":  "f2",
+                                                                                     "name":  "Source_URL",
+                                                                                     "value":  "={{ $json.url }}",
+                                                                                     "type":  "string"
+                                                                                 },
+                                                                                 {
+                                                                                     "id":  "f3",
+                                                                                     "name":  "Collected_At",
+                                                                                     "value":  "={{ $now.format(\u0027yyyy-MM-dd HH:mm\u0027) }}",
+                                                                                     "type":  "string"
+                                                                                 },
+                                                                                 {
+                                                                                     "id":  "f4",
+                                                                                     "name":  "Status",
+                                                                                     "value":  "Pending",
+                                                                                     "type":  "string"
+                                                                                 },
+                                                                                 {
+                                                                                     "id":  "f5",
+                                                                                     "name":  "Note",
+                                                                                     "value":  "={{ \u0027score=\u0027 + ($json.engagement_score || 0) + \u0027 fit=\u0027 + ($json.content_fit_score || 0) + \u0027 strongest=\u0027 + ($json.engagement_strongest_metric || 0) + \u0027 metricCount=\u0027 + ($json.engagement_metric_count || 0) + \u0027 ai=\u0027 + ($json._classifier_angle || \u0027unknown\u0027) + \u0027 conf=\u0027 + ($json._classifier_confidence || 0) + \u0027 metrics=\u0027 + JSON.stringify($json.engagement_metrics || []) + \u0027 reason=\u0027 + ($json._classifier_reason || \u0027\u0027) + \u0027 | \u0027 + ($json.text_preview || \u0027\u0027) }}",
+                                                                                     "type":  "string"
+                                                                                 }
+                                                                             ]
+                                                         },
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "type":  "n8n-nodes-base.set",
+                      "typeVersion":  3.4,
+                      "position":  [
+                                       3280,
+                                       1136
+                                   ],
+                      "id":  "36fa86c1-378f-4f4f-99d5-df8fa5a93f8f",
+                      "name":  "Normalize Sheet Row"
+                  },
+                  {
+                      "parameters":  {
+                                         "authentication":  "serviceAccount",
+                                         "documentId":  {
+                                                            "__rl":  true,
+                                                            "value":  "={{ $env.GOOGLE_SHEET_ID }}",
+                                                            "mode":  "list",
+                                                            "cachedResultName":  "GOOGLE_SHEET_ID",
+                                                            "cachedResultUrl":  ""
+                                                        },
+                                         "sheetName":  {
+                                                           "__rl":  true,
+                                                           "value":  "Threads",
+                                                           "mode":  "name"
+                                                       },
+                                         "operation":  "read",
+                                         "range":  "Threads!A:F",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "type":  "n8n-nodes-base.googleSheets",
+                      "typeVersion":  4.7,
+                      "position":  [
+                                       2160,
+                                       1248
+                                   ],
+                      "id":  "4f03d161-ecb0-40c7-9b63-a21eae302b65",
+                      "name":  "Read Current Sheet",
+                      "credentials":  {
+                                          "googleApi":  {
+                                                            "id":  "VEmpv0MmVvoaBa11",
+                                                            "name":  "Google Sheets account"
+                                                        }
+                                      }
+                  },
+                  {
+                      "parameters":  {
+                                         "mode":  "combine",
+                                         "combineBy":  "combineByFields",
+                                         "fieldsToMatchString":  "ID",
+                                         "joinMode":  "keepNonMatches",
+                                         "outputDataFrom":  "input1",
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "type":  "n8n-nodes-base.merge",
+                      "typeVersion":  3.2,
+                      "position":  [
+                                       3616,
+                                       1120
+                                   ],
+                      "id":  "1ae481c6-c58a-40be-ae4b-c9a2c33ab0b5",
+                      "name":  "Deduplicate by ID"
+                  },
+                  {
+                      "parameters":  {
+                                         "authentication":  "serviceAccount",
+                                         "operation":  "append",
+                                         "documentId":  {
+                                                            "__rl":  true,
+                                                            "value":  "={{ $env.GOOGLE_SHEET_ID }}",
+                                                            "mode":  "list",
+                                                            "cachedResultName":  "GOOGLE_SHEET_ID",
+                                                            "cachedResultUrl":  ""
+                                                        },
+                                         "sheetName":  {
+                                                           "__rl":  true,
+                                                           "value":  "Threads",
+                                                           "mode":  "name"
+                                                       },
+                                         "columns":  {
+                                                         "mappingMode":  "defineBelow",
+                                                         "value":  {
+                                                                       "ID":  "={{ $json.ID }}",
+                                                                       "Source_URL":  "={{ $json.Source_URL }}",
+                                                                       "Collected_At":  "={{ $json.Collected_At }}",
+                                                                       "Status":  "={{ $json.Status }}",
+                                                                       "Note":  "={{ $json.Note }}"
+                                                                   },
+                                                         "matchingColumns":  [
+
+                                                                             ],
+                                                         "schema":  [
+                                                                        {
+                                                                            "id":  "ID",
+                                                                            "displayName":  "ID",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true
+                                                                        },
+                                                                        {
+                                                                            "id":  "Source_URL",
+                                                                            "displayName":  "Source_URL",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true
+                                                                        },
+                                                                        {
+                                                                            "id":  "Collected_At",
+                                                                            "displayName":  "Collected_At",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true
+                                                                        },
+                                                                        {
+                                                                            "id":  "Status",
+                                                                            "displayName":  "Status",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true
+                                                                        },
+                                                                        {
+                                                                            "id":  "Screenshots",
+                                                                            "displayName":  "Screenshots",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true,
+                                                                            "removed":  false
+                                                                        },
+                                                                        {
+                                                                            "id":  "Extracted_Content",
+                                                                            "displayName":  "Extracted_Content",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true,
+                                                                            "removed":  false
+                                                                        },
+                                                                        {
+                                                                            "id":  "Narrator_Script",
+                                                                            "displayName":  "Narrator_Script",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true,
+                                                                            "removed":  false
+                                                                        },
+                                                                        {
+                                                                            "id":  "Video_Path",
+                                                                            "displayName":  "Video_Path",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true,
+                                                                            "removed":  false
+                                                                        },
+                                                                        {
+                                                                            "id":  "Published_URL",
+                                                                            "displayName":  "Published_URL",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true,
+                                                                            "removed":  false
+                                                                        },
+                                                                        {
+                                                                            "id":  "Note",
+                                                                            "displayName":  "Note",
+                                                                            "required":  false,
+                                                                            "defaultMatch":  false,
+                                                                            "display":  true,
+                                                                            "type":  "string",
+                                                                            "canBeUsedToMatch":  true,
+                                                                            "removed":  false
+                                                                        }
+                                                                    ],
+                                                         "attemptToConvertTypes":  false,
+                                                         "convertFieldsToString":  false
+                                                     },
+                                         "options":  {
+
+                                                     }
+                                     },
+                      "type":  "n8n-nodes-base.googleSheets",
+                      "typeVersion":  4.7,
+                      "position":  [
+                                       3824,
+                                       1120
+                                   ],
+                      "id":  "e504d7a4-79fa-4713-87e9-5ef90bfabcce",
+                      "name":  "Append to Sheet",
+                      "credentials":  {
+                                          "googleApi":  {
+                                                            "id":  "VEmpv0MmVvoaBa11",
+                                                            "name":  "Google Sheets account"
+                                                        }
+                                      }
+                  }
+              ],
+    "connections":  {
+                        "Manual Test Trigger":  {
+                                                    "main":  [
+                                                                 [
+                                                                     {
+                                                                         "node":  "Run Threads Miner",
+                                                                         "type":  "main",
+                                                                         "index":  0
+                                                                     },
+                                                                     {
+                                                                         "node":  "Read Current Sheet",
+                                                                         "type":  "main",
+                                                                         "index":  0
+                                                                     }
+                                                                 ]
+                                                             ]
+                                                },
+                        "Scheduler (every 6h)":  {
+                                                     "main":  [
+                                                                  [
+                                                                      {
+                                                                          "node":  "Run Threads Miner",
+                                                                          "type":  "main",
+                                                                          "index":  0
+                                                                      },
+                                                                      {
+                                                                          "node":  "Read Current Sheet",
+                                                                          "type":  "main",
+                                                                          "index":  0
+                                                                      }
+                                                                  ]
+                                                              ]
+                                                 },
+                        "Run Threads Miner":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Parse JSON Output",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              },
+                        "Parse JSON Output":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Prepare AI Classifier Payload",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              },
+                        "Prepare AI Classifier Payload":  {
+                                                              "main":  [
+                                                                           [
+                                                                               {
+                                                                                   "node":  "Merge Classifier Result",
+                                                                                   "type":  "main",
+                                                                                   "index":  1
+                                                                               },
+                                                                               {
+                                                                                   "node":  "Gemini Content Classifier",
+                                                                                   "type":  "main",
+                                                                                   "index":  0
+                                                                               }
+                                                                           ]
+                                                                       ]
+                                                          },
+                        "Gemini Content Classifier":  {
+                                                          "main":  [
+                                                                       [
+                                                                           {
+                                                                               "node":  "Merge Classifier Result",
+                                                                               "type":  "main",
+                                                                               "index":  0
+                                                                           }
+                                                                       ]
+                                                                   ]
+                                                      },
+                        "Merge Classifier Result":  {
+                                                        "main":  [
+                                                                     [
+                                                                         {
+                                                                             "node":  "Finalize AI Classifier",
+                                                                             "type":  "main",
+                                                                             "index":  0
+                                                                         }
+                                                                     ]
+                                                                 ]
+                                                    },
+                        "Finalize AI Classifier":  {
+                                                       "main":  [
+                                                                    [
+                                                                        {
+                                                                            "node":  "Normalize Sheet Row",
+                                                                            "type":  "main",
+                                                                            "index":  0
+                                                                        }
+                                                                    ]
+                                                                ]
+                                                   },
+                        "Normalize Sheet Row":  {
+                                                    "main":  [
+                                                                 [
+                                                                     {
+                                                                         "node":  "Deduplicate by ID",
+                                                                         "type":  "main",
+                                                                         "index":  0
+                                                                     }
+                                                                 ]
+                                                             ]
+                                                },
+                        "Read Current Sheet":  {
+                                                   "main":  [
+                                                                [
+                                                                    {
+                                                                        "node":  "Deduplicate by ID",
+                                                                        "type":  "main",
+                                                                        "index":  1
+                                                                    }
+                                                                ]
+                                                            ]
+                                               },
+                        "Deduplicate by ID":  {
+                                                  "main":  [
+                                                               [
+                                                                   {
+                                                                       "node":  "Append to Sheet",
+                                                                       "type":  "main",
+                                                                       "index":  0
+                                                                   }
+                                                               ]
+                                                           ]
+                                              }
+                    },
+    "pinData":  {
+
+                },
+    "meta":  {
+                 "instanceId":  "6c30afaa852f74e02f831710b585be20efcca194df2402dde964823fcb63a143"
+             }
 }

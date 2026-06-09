@@ -72,122 +72,11 @@
     },
     {
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nconst videoPath = String(item.Video_Path || '').trim();\nconst baseName = videoPath.split(/[\\\\/]/).pop() || 'final.mp4';\nconst readFilePath = videoPath.replace(/^\\/workspace\\/runtime\\//, '/home/node/.n8n-files/runtime/');\nreturn [{\n  json: {\n    ...item,\n    Drive_File_Name: 'phase4_draft_' + item.ID + '_' + baseName,\n    Read_File_Path: readFilePath,\n  },\n}];"
-      },
-      "id": "phase4v2-drive-meta",
-      "name": "Prepare Drive Draft Metadata",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1088,
-        128
-      ]
-    },
-    {
-      "parameters": {
-        "fileSelector": "={{ $json.Read_File_Path }}",
-        "options": {
-          "fileName": "={{ $json.Drive_File_Name }}",
-          "mimeType": "video/mp4",
-          "dataPropertyName": "data"
-        }
-      },
-      "id": "phase4v2-read-file",
-      "name": "Read Draft Video File",
-      "type": "n8n-nodes-base.readWriteFile",
-      "typeVersion": 1.1,
-      "position": [
-        1328,
-        128
-      ]
-    },
-    {
-      "parameters": {
-        "name": "={{ $('Prepare Drive Draft Metadata').item.json.Drive_File_Name }}",
-        "driveId": {
-          "__rl": true,
-          "value": "My Drive",
-          "mode": "list",
-          "cachedResultName": "My Drive",
-          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
-        },
-        "folderId": {
-          "__rl": true,
-          "value": "={{ $env.DRAFT_REVIEW_DRIVE_FOLDER_ID }}",
-          "mode": "id",
-          "cachedResultName": "DRAFT_REVIEW_DRIVE_FOLDER_ID",
-          "cachedResultUrl": ""
-        },
-        "options": {
-          "simplifyOutput": true
-        }
-      },
-      "id": "phase4v2-upload-drive",
-      "name": "Upload Draft Video To Drive",
-      "type": "n8n-nodes-base.googleDrive",
-      "typeVersion": 3,
-      "position": [
-        1568,
-        128
-      ],
-      "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "7I5EArRAZjEAoLYU",
-          "name": "Google Drive account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "operation": "share",
-        "fileId": {
-          "__rl": true,
-          "value": "={{ $('Upload Draft Video To Drive').item.json.id }}",
-          "mode": "id"
-        },
-        "permissionsUi": {
-          "permissionsValues": {
-            "role": "reader",
-            "type": "anyone"
-          }
-        },
-        "options": {}
-      },
-      "id": "phase4v2-share-drive",
-      "name": "Share Draft Video Link",
-      "type": "n8n-nodes-base.googleDrive",
-      "typeVersion": 3,
-      "position": [
-        1808,
-        128
-      ],
-      "credentials": {
-        "googleDriveOAuth2Api": {
-          "id": "7I5EArRAZjEAoLYU",
-          "name": "Google Drive account"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "jsCode": "const upload = $('Upload Draft Video To Drive').item.json;\nconst source = $('Prepare Drive Draft Metadata').item.json;\nconst fileId = String(upload.id || upload.fileId || '').trim();\nif (!fileId) {\n  throw new Error('Google Drive upload did not return a file id');\n}\nconst draftUrl = String(upload.webViewLink || '').trim() || ('https://drive.google.com/file/d/' + fileId + '/view');\n\nreturn [{\n  json: {\n    ID: source.ID,\n    Video_Path: source.Video_Path,\n    Caption: source.Caption,\n    Draft_Video_URL: draftUrl,\n    Draft_Drive_File_ID: fileId,\n    Status: 'Draft',\n    Note: 'Phase 4: draft uploaded to Drive and sent to Telegram for review',\n  },\n}];"
-      },
-      "id": "phase4v2-review-result",
-      "name": "Prepare Draft Review Result",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2048,
-        128
-      ]
-    },
-    {
-      "parameters": {
         "method": "POST",
         "url": "={{ \"https://api.telegram.org/bot\" + $env.TELEGRAM_BOT_TOKEN + \"/sendMessage\" }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { chat_id: $env.TELEGRAM_CHAT_ID, text: ['Phase 4 draft ready for review', '', 'ID: ' + $json.ID, 'Draft: ' + $json.Draft_Video_URL, '', 'Caption:', String($json.Caption || '').slice(0, 900), '', 'Choose an admin decision below.'].join('\\n'), disable_web_page_preview: false, reply_markup: { inline_keyboard: [[ { text: 'Approve', callback_data: 'phase4|approve|' + $json.ID }, { text: 'Reject', callback_data: 'phase4|reject|' + $json.ID } ], [ { text: 'Open Draft', url: $json.Draft_Video_URL } ]] } } }}",
+        "jsonBody": "={{ { chat_id: $env.TELEGRAM_CHAT_ID, text: ['Phase 4 draft ready for review', '', 'ID: ' + $json.ID, 'Review video: ' + $json.Draft_Video_URL, '', 'Caption:', String($json.Caption || '').slice(0, 900), '', 'Choose an admin decision below.'].join('\\n'), disable_web_page_preview: false, reply_markup: { inline_keyboard: [[ { text: 'Approve', callback_data: 'phase4|approve|' + $json.ID }, { text: 'Reject', callback_data: 'phase4|reject|' + $json.ID } ], [ { text: 'Open Review', url: $json.Draft_Video_URL } ]] } } }}",
         "options": {
           "timeout": 30000
         }
@@ -197,7 +86,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        2288,
+        1328,
         48
       ],
       "retryOnFail": true,
@@ -419,7 +308,7 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        2288,
+        1328,
         208
       ],
       "credentials": {
@@ -902,8 +791,10 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "phase4-review-callback",
-        "responseMode": "lastNode",
-        "options": {}
+        "responseMode": "onReceived",
+        "options": {
+          "responseData": "{\"ok\":true}"
+        }
       },
       "id": "phase4v2-webhook",
       "name": "Telegram Callback Webhook",
@@ -1481,6 +1372,29 @@
           "name": "Google Sheets account"
         }
       }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/phase4/draft-review",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { id: $json.ID, video_path: $json.Video_Path, caption: $json.Caption } }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "phase4v3-local-review",
+      "name": "Create Local Review Link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1088,
+        128
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
     }
   ],
   "connections": {
@@ -1521,7 +1435,7 @@
       "main": [
         [
           {
-            "node": "Prepare Drive Draft Metadata",
+            "node": "Create Local Review Link",
             "type": "main",
             "index": 0
           }
@@ -1534,66 +1448,6 @@
           }
         ],
         []
-      ]
-    },
-    "Prepare Drive Draft Metadata": {
-      "main": [
-        [
-          {
-            "node": "Read Draft Video File",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Read Draft Video File": {
-      "main": [
-        [
-          {
-            "node": "Upload Draft Video To Drive",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Upload Draft Video To Drive": {
-      "main": [
-        [
-          {
-            "node": "Share Draft Video Link",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Share Draft Video Link": {
-      "main": [
-        [
-          {
-            "node": "Prepare Draft Review Result",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prepare Draft Review Result": {
-      "main": [
-        [
-          {
-            "node": "Send Telegram Review Link",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Update Draft Review Row",
-            "type": "main",
-            "index": 0
-          }
-        ]
       ]
     },
     "Mark Publishing Row": {
@@ -1689,6 +1543,22 @@
         [
           {
             "node": "Update Callback Publish Result Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Local Review Link": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Review Link",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Draft Review Row",
             "type": "main",
             "index": 0
           }

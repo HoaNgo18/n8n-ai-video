@@ -316,7 +316,8 @@ POST http://host.docker.internal:8000/phase4/telegram-callback
 Biến `.env` liên quan:
 
 ```env
-TELEGRAM_BOT_TOKEN=
+TELEGRAM__PHASE4_BOT_TOKEN=
+TELEGRAM_PHASE1_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 
 REVIEW_PUBLIC_BASE_URL=https://example.ngrok-free.app
@@ -469,10 +470,10 @@ workflows/04-review&publish.json
 API gọi:
 
 ```text
-https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/sendMessage
-https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/sendVideo
-https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/answerCallbackQuery
-https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/editMessageText
+https://api.telegram.org/bot<TELEGRAM__PHASE4_BOT_TOKEN>/sendMessage
+https://api.telegram.org/bot<TELEGRAM__PHASE4_BOT_TOKEN>/sendVideo
+https://api.telegram.org/bot<TELEGRAM__PHASE4_BOT_TOKEN>/answerCallbackQuery
+https://api.telegram.org/bot<TELEGRAM__PHASE4_BOT_TOKEN>/editMessageText
 ```
 
 Không ghi token thật vào docs.
@@ -916,7 +917,8 @@ docker compose up -d runner
 Set Telegram webhook vào runner:
 
 ```powershell
-curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/phase4/telegram-callback"
+curl "https://api.telegram.org/bot<TELEGRAM__PHASE4_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/phase4/telegram-callback"
+curl "https://api.telegram.org/bot<TELEGRAM_PHASE1_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/phase1/telegram-search-callback"
 ```
 
 Trong n8n test mode, tạm đổi `N8N_PHASE4_CALLBACK_URL` sang URL `/webhook-test/...` nội bộ tương ứng. Khi workflow active, đổi lại `/webhook/...`.

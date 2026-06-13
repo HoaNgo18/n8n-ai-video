@@ -26,7 +26,7 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
@@ -52,6 +52,31 @@ DEFAULT_MIN_CONTENT_FIT_SCORE = 2
 
 THREADS_LOGIN_URL = "https://www.threads.net/login"
 THREADS_HOME_URL = "https://www.threads.net/"
+THREADS_SEARCH_URL = "https://www.threads.net/search?q={query}&serp_type=default"
+
+# ── Mining mode constants ──
+MINING_MODE_AUTO = "auto"    # L1 trend-keywords + L2 static sweeps + L3 home feed fallback
+MINING_MODE_SEARCH = "search"  # single keyword (legacy behaviour)
+MINING_MODE_HOME = "home"    # home feed only (legacy behaviour)
+
+DEFAULT_MINING_MODE = MINING_MODE_AUTO
+DEFAULT_TREND_KEYWORDS_LIMIT = 4   # how many RSS trend-keywords to search on Threads
+DEFAULT_SWEEP_SCROLL_COUNT = 4     # shallower scroll per query in auto mode
+DEFAULT_HOME_SCROLL_COUNT = 6      # scroll count when falling back to home feed
+
+# Static sweep queries: broad mass-appeal Vietnamese topics that are almost
+# always active on Threads. Ordered from highest to lowest expected yield.
+# Override entirely via env THREADS_SWEEP_QUERIES (newline or comma-separated).
+DEFAULT_SWEEP_QUERIES: list[str] = [
+    "chuyện đời sống",       # everyday life stories
+    "drama",                 # universal engagement hook
+    "tâm sự",               # confession / personal story
+    "giá nhà chung cư",     # housing prices — perennial hot topic
+    "lương thưởng công việc", # salary & work
+    "giao thông Hà Nội Sài Gòn", # traffic — daily frustration
+    "câu chuyện gia đình",   # family drama
+    "storytime",             # explicitly story-format posts
+]
 
 SALES_KEYWORDS = (
     "bao gia", "order", "dat hang", "mua ngay", "sale", "giam gia",
@@ -73,7 +98,7 @@ DISCUSSION_KEYWORDS = (
 HOT_TOPIC_KEYWORDS = (
     "gia nha", "bat dong san", "chung cu", "thue nha", "mua nha",
     "nong len", "mat dien", "gia vang", "lam phat", "kinh te",
-    "chinh tri", "xa hoi", "luong", "that nghiep", "thue",
+    "chinh tri", "xa hoi", "that nghiep", "thue",
     "hoc phi", "benh vien", "giao thong", "tai nan", "viral",
     "dang hot", "gia xang", "xang", "quy hoach", "do thi",
     "ha noi", "sai gon", "tp hcm", "dao duong", "sua duong",
@@ -81,8 +106,8 @@ HOT_TOPIC_KEYWORDS = (
     "truyen ma", "tam linh", "ma quy", "nha ma", "kinh di",
 )
 MASS_APPEAL_KEYWORDS = (
-    "tien", "gia", "nha", "xang", "dien", "nuoc", "duong", "xe",
-    "luong", "viec lam", "that nghiep", "hoc", "benh", "cuoi",
+    "tien", "xang", "dien", "nuoc", "duong", "xe",
+    "viec lam", "that nghiep", "hoc", "benh",
     "ly hon", "con cai", "phu huynh", "hang xom", "cong ty",
     "sep", "dong nghiep", "phap luat", "quy dinh", "chinh sach",
     "ha noi", "sai gon", "tp hcm", "chung cu", "dat dai",
@@ -145,6 +170,13 @@ class Config:
     candidate_limit: int
     min_content_fit_score: int
     dry_run: bool
+    search_keyword: str = ""
+    # ── Auto mining fields ──
+    mining_mode: str = MINING_MODE_AUTO
+    trend_keywords_limit: int = DEFAULT_TREND_KEYWORDS_LIMIT
+    sweep_queries: tuple = ()       # empty = use DEFAULT_SWEEP_QUERIES
+    sweep_scroll_count: int = DEFAULT_SWEEP_SCROLL_COUNT
+    trend_brief: str = ""           # passed to output for Gemini classifier
 
 
 @dataclass
@@ -199,7 +231,7 @@ def is_vietnamese(text: str) -> bool:
 
 
 def normalize_search_text(text: str) -> str:
-    base = unicodedata.normalize("NFKD", text or "")
+    base = unicodedata.normalize("NFKD", (text or "").replace("đ", "d").replace("Đ", "D"))
     ascii_text = base.encode("ascii", "ignore").decode("ascii").lower()
     return re.sub(r"\s+", " ", ascii_text).strip()
 
@@ -216,12 +248,25 @@ def env_keyword_terms(name: str) -> list[str]:
     return terms
 
 
+def contains_normalized_keyword(normalized_text: str, keyword: str) -> bool:
+    keyword = normalize_search_text(keyword)
+    if not keyword:
+        return False
+    if " " in keyword:
+        return keyword in normalized_text
+    return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", normalized_text) is not None
+
+
+def matched_keywords(normalized_text: str, keywords) -> list[str]:
+    return [keyword for keyword in keywords if contains_normalized_keyword(normalized_text, keyword)]
+
+
 def classify_preview_text(text: str) -> str | None:
     normalized = normalize_search_text(text)
     if not normalized:
         return "empty preview"
-    sales_hits = sum(1 for k in SALES_KEYWORDS if k in normalized)
-    self_promo_hits = sum(1 for k in SELF_PROMO_KEYWORDS if k in normalized)
+    sales_hits = len(matched_keywords(normalized, SALES_KEYWORDS))
+    self_promo_hits = len(matched_keywords(normalized, SELF_PROMO_KEYWORDS))
     has_price = bool(re.search(r"\b\d{2,3}(?:[.,]\d{3})+\b|\b\d+\s*(k|tr|cu|usd)\b", normalized))
     has_contact = bool(re.search(r"\b\d{9,11}\b|zalo|sdt|so dien thoai", normalized))
     if sales_hits >= 2 or (sales_hits >= 1 and (has_price or has_contact)):
@@ -236,15 +281,15 @@ def assess_content_fit(text: str) -> dict:
     if not normalized:
         return {"score": 0, "tags": [], "reason": "empty content"}
 
-    discussion_hits = [k for k in DISCUSSION_KEYWORDS if k in normalized]
-    priority_hits = [k for k in env_keyword_terms("THREADS_PRIORITY_TOPICS") if k in normalized]
-    topic_hits = [k for k in HOT_TOPIC_KEYWORDS if k in normalized]
-    mass_hits = [k for k in MASS_APPEAL_KEYWORDS if k in normalized]
-    strong_story_hits = [k for k in STORY_STRONG_KEYWORDS if k in normalized]
-    weak_story_hits = [k for k in STORY_WEAK_KEYWORDS if k in normalized]
-    low_signal_hits = [k for k in LOW_SIGNAL_KEYWORDS if k in normalized]
-    niche_hits = [k for k in NICHE_COMMUNITY_KEYWORDS if k in normalized]
-    soft_personal_hits = [k for k in SOFT_PERSONAL_ADVICE_KEYWORDS if k in normalized]
+    discussion_hits = matched_keywords(normalized, DISCUSSION_KEYWORDS)
+    priority_hits = matched_keywords(normalized, env_keyword_terms("THREADS_PRIORITY_TOPICS"))
+    topic_hits = matched_keywords(normalized, HOT_TOPIC_KEYWORDS)
+    mass_hits = matched_keywords(normalized, MASS_APPEAL_KEYWORDS)
+    strong_story_hits = matched_keywords(normalized, STORY_STRONG_KEYWORDS)
+    weak_story_hits = matched_keywords(normalized, STORY_WEAK_KEYWORDS)
+    low_signal_hits = matched_keywords(normalized, LOW_SIGNAL_KEYWORDS)
+    niche_hits = matched_keywords(normalized, NICHE_COMMUNITY_KEYWORDS)
+    soft_personal_hits = matched_keywords(normalized, SOFT_PERSONAL_ADVICE_KEYWORDS)
 
     sentence_count = len([p for p in re.split(r"[.!?\n]+", text) if p.strip()])
     word_count = len(normalized.split())
@@ -367,6 +412,127 @@ def estimate_engagement(text: str) -> dict:
     }
 
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Auto mining helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def resolve_sweep_queries(config: "Config") -> list[str]:
+    """Return the ordered list of search queries for L2 static sweep.
+
+    Priority: env THREADS_SWEEP_QUERIES > config.sweep_queries > DEFAULT_SWEEP_QUERIES.
+    """
+    env_raw = os.getenv("THREADS_SWEEP_QUERIES", "").strip()
+    if env_raw:
+        queries = [q.strip() for q in re.split(r"[\n,]+", env_raw) if q.strip()]
+        if queries:
+            return queries
+
+    if config.sweep_queries:
+        return list(config.sweep_queries)
+
+    return list(DEFAULT_SWEEP_QUERIES)
+
+
+def fetch_trend_keywords(limit: int) -> tuple[list[str], str]:
+    """Call trend_signal.build_trend_signal() and return (keywords, brief).
+
+    Returns ([], "") on any error so the caller can degrade gracefully.
+    """
+    try:
+        # Import here to avoid hard dependency if trend_signal is missing.
+        import sys as _sys
+        import importlib
+
+        _trend_mod_name = "trend_signal"
+        if _trend_mod_name not in _sys.modules:
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location(
+                _trend_mod_name,
+                Path(__file__).resolve().parent / f"{_trend_mod_name}.py",
+            )
+            if _spec and _spec.loader:
+                _mod = importlib.util.module_from_spec(_spec)
+                _sys.modules[_trend_mod_name] = _mod
+                _spec.loader.exec_module(_mod)
+        trend_mod = _sys.modules[_trend_mod_name]
+        effective_limit = max(limit, 6) if limit > 0 else 6
+        signal = trend_mod.build_trend_signal(keyword="", limit=effective_limit)
+        keywords: list[str] = signal.get("topics") or []
+        brief: str = signal.get("brief") or ""
+        log(f"Trend signal fetched: {len(keywords)} topics, brief={brief[:80]!r}")
+        if limit == 0:
+            return [], brief
+        return keywords[:limit], brief
+    except Exception as exc:
+        log(f"Trend signal fetch failed (non-fatal): {exc}")
+        return [], ""
+
+
+def build_query_plan(config: "Config", trend_keywords: list[str] | None = None) -> list[dict]:
+    """Build an ordered list of query jobs for multi-source auto mining.
+
+    Each job is:
+        {
+            "query": str,       # search term (empty string = home feed)
+            "source": str,      # label for logging / output tagging
+            "scroll_count": int,
+            "posts_quota": int, # target accepted posts from this job
+        }
+    """
+    if config.mining_mode == MINING_MODE_HOME:
+        return [{
+            "query": "",
+            "source": "home",
+            "scroll_count": config.scroll_count,
+            "posts_quota": config.max_posts,
+        }]
+
+    if config.mining_mode == MINING_MODE_SEARCH:
+        return [{
+            "query": config.search_keyword,
+            "source": f"search:{config.search_keyword}",
+            "scroll_count": config.scroll_count,
+            "posts_quota": config.max_posts,
+        }]
+
+    # ── MINING_MODE_AUTO ──
+    plan: list[dict] = []
+
+    # L1: trend-driven keywords from RSS
+    if config.trend_keywords_limit > 0:
+        trend_keywords = trend_keywords or []
+        posts_per_trend = max(3, config.max_posts // max(1, len(trend_keywords) + 4))
+        for kw in trend_keywords:
+            plan.append({
+                "query": kw,
+                "source": f"trend:{kw}",
+                "scroll_count": config.sweep_scroll_count,
+                "posts_quota": posts_per_trend,
+            })
+
+    # L2: static sweep queries
+    sweep_qs = resolve_sweep_queries(config)
+    posts_per_sweep = max(3, config.max_posts // max(1, len(sweep_qs) + len(plan)))
+    for q in sweep_qs:
+        plan.append({
+            "query": q,
+            "source": f"sweep:{q}",
+            "scroll_count": config.sweep_scroll_count,
+            "posts_quota": posts_per_sweep,
+        })
+
+    # L3: home feed fallback (always appended — used only if still under quota)
+    plan.append({
+        "query": "",
+        "source": "home",
+        "scroll_count": DEFAULT_HOME_SCROLL_COUNT,
+        "posts_quota": config.max_posts,   # fill up to max_posts if needed
+    })
+
+    return plan
+
+
 async def get_candidate_posts(page: Page) -> list[dict[str, str]]:
     return await page.evaluate(
         """
@@ -443,32 +609,53 @@ async def has_valid_session(page: Page, config: Config) -> bool:
         return False
 
 
-async def collect_posts(page: Page, config: Config) -> list[dict]:
+async def _collect_from_source(
+    page: Page,
+    config: Config,
+    query: str,
+    source_label: str,
+    scroll_count: int,
+    posts_quota: int,
+    seen: set,
+    stats: "RejectStats",
+    trend_brief: str = "",
+) -> tuple[list[dict], list[dict]]:
+    """Scrape one URL (search query or home feed) and return (accepted, diagnostics).
+
+    `seen` is shared across calls so duplicates are de-duplicated globally.
+    `posts_quota` is a soft cap: stop accepting once reached (but finish current scroll).
+    """
     results: list[dict] = []
     diagnostics: list[dict] = []
-    seen: set[str] = set()
-    stats = RejectStats()
 
-    # ── Go straight to Home feed (skip Explore — unreliable in headless) ──
-    log(f"Opening Threads Home feed... (headless={config.headless})")
-    await page.goto(THREADS_HOME_URL, wait_until="domcontentloaded", timeout=config.timeout_ms)
-    await page.wait_for_timeout(5000)
-    log(f"Home feed loaded. final_url={page.url}")
+    if query:
+        start_url = THREADS_SEARCH_URL.format(query=quote_plus(query))
+    else:
+        start_url = THREADS_HOME_URL
+
+    log(f"  → {source_label} | url={start_url[:80]}")
+    try:
+        await page.goto(start_url, wait_until="domcontentloaded", timeout=config.timeout_ms)
+    except Exception as exc:
+        log(f"  ✗ Navigation failed for {source_label}: {exc}")
+        return [], []
+    await page.wait_for_timeout(4000)
 
     total_candidates = 0
     viet_candidates = 0
 
-    for scroll_index in range(config.scroll_count):
+    for scroll_index in range(scroll_count):
         candidates = await get_candidate_posts(page)
-        new_candidates = [c for c in candidates if extract_post_id(
-            canonical_post_url(c.get("href", ""))
-        ) not in seen]
+        new_candidates = [
+            c for c in candidates
+            if extract_post_id(canonical_post_url(c.get("href", ""))) not in seen
+        ]
+        total_candidates += len(new_candidates)
 
         log(
-            f"Scroll {scroll_index + 1}/{config.scroll_count}: "
-            f"{len(candidates)} links found, {len(new_candidates)} new."
+            f"    scroll {scroll_index + 1}/{scroll_count}: "
+            f"{len(candidates)} links, {len(new_candidates)} new, accepted so far={len(results)}"
         )
-        total_candidates += len(new_candidates)
 
         for candidate in candidates:
             href = candidate.get("href", "")
@@ -489,7 +676,8 @@ async def collect_posts(page: Page, config: Config) -> list[dict]:
                 stats.add("language:non-viet")
                 if config.dry_run:
                     diagnostics.append({"id": post_id, "url": url, "accepted": False,
-                                        "stage": "language", "reason": "non-vietnamese"})
+                                        "stage": "language", "reason": "non-vietnamese",
+                                        "source": source_label})
                 continue
             viet_candidates += 1
 
@@ -500,11 +688,28 @@ async def collect_posts(page: Page, config: Config) -> list[dict]:
                 if config.dry_run:
                     diagnostics.append({"id": post_id, "url": url, "accepted": False,
                                         "stage": "preview", "reason": reject_reason,
-                                        "text_preview": text[:240]})
+                                        "text_preview": text[:240], "source": source_label})
                 continue
 
             # ── Gate 3: Content fit ──
+            normalized_text = normalize_search_text(text)
+            query_match = bool(query and contains_normalized_keyword(normalized_text, query))
+            if config.mining_mode == MINING_MODE_SEARCH and query and not query_match:
+                stats.add("search-query:no-match")
+                if config.dry_run:
+                    diagnostics.append({"id": post_id, "url": url, "accepted": False,
+                                        "stage": "query-match", "reason": "manual search keyword not found in preview",
+                                        "text_preview": text[:240], "source": source_label})
+                continue
+
             content_fit = assess_content_fit(text)
+            if query_match:
+                content_fit = {
+                    **content_fit,
+                    "score": int(content_fit.get("score") or 0) + 2,
+                    "tags": [*content_fit.get("tags", []), "query-match"],
+                    "reason": ",".join(part for part in [content_fit.get("reason") or "", normalize_search_text(query)] if part),
+                }
             if content_fit["score"] < config.min_content_fit_score:
                 stats.add(f"content-fit:score={content_fit['score']} tags={content_fit['tags']}")
                 if config.dry_run:
@@ -513,7 +718,7 @@ async def collect_posts(page: Page, config: Config) -> list[dict]:
                                         "content_fit_score": content_fit["score"],
                                         "content_fit_tags": content_fit["tags"],
                                         "reason": content_fit["reason"] or "low score",
-                                        "text_preview": text[:240]})
+                                        "text_preview": text[:240], "source": source_label})
                 continue
 
             # ── Gate 4: Engagement ──
@@ -527,7 +732,7 @@ async def collect_posts(page: Page, config: Config) -> list[dict]:
                                         "engagement_metrics": engagement["metrics"],
                                         "content_fit_score": content_fit["score"],
                                         "content_fit_tags": content_fit["tags"],
-                                        "text_preview": text[:240]})
+                                        "text_preview": text[:240], "source": source_label})
                 continue
             if engagement["strongest_metric"] < config.min_strongest_metric_score:
                 stats.add(f"engagement:strongest={engagement['strongest_metric']}")
@@ -539,13 +744,16 @@ async def collect_posts(page: Page, config: Config) -> list[dict]:
                                         "engagement_strongest_metric": engagement["strongest_metric"],
                                         "content_fit_score": content_fit["score"],
                                         "content_fit_tags": content_fit["tags"],
-                                        "text_preview": text[:240]})
+                                        "text_preview": text[:240], "source": source_label})
                 continue
 
             # ── Accepted ──
             item = {
                 "id": post_id,
                 "url": url,
+                "source": source_label,
+                "search_keyword": query,
+                "query_match": query_match,
                 "text_preview": text[:240],
                 "content_fit_score": content_fit["score"],
                 "content_fit_tags": content_fit["tags"],
@@ -554,37 +762,87 @@ async def collect_posts(page: Page, config: Config) -> list[dict]:
                 "engagement_raw": engagement["raw"],
                 "engagement_metric_count": engagement["metric_count"],
                 "engagement_strongest_metric": engagement["strongest_metric"],
+                "trend_brief": trend_brief,
             }
             results.append(item)
             if config.dry_run:
                 diagnostics.append({**item, "accepted": True, "stage": "accepted"})
 
-            if len(results) >= config.candidate_limit:
+            if len(results) >= posts_quota:
                 break
 
-        if len(results) >= config.candidate_limit:
-            log("Candidate limit reached — stopping scroll.")
+        if len(results) >= posts_quota:
+            log(f"    quota {posts_quota} reached for {source_label} — moving to next source.")
             break
 
         await page.evaluate("window.scrollBy(0, window.innerHeight * 3)")
-        await page.wait_for_timeout(2500)
+        await page.wait_for_timeout(2000)
 
-    # ── Summary log ──
-    log(f"=== Scan complete: total_candidates={total_candidates}, viet={viet_candidates}, accepted={len(results)} ===")
+    log(f"  ✓ {source_label}: candidates={total_candidates} viet={viet_candidates} accepted={len(results)}")
+    return results, diagnostics
+
+
+async def collect_posts(page: Page, config: Config) -> list[dict]:
+    """Multi-source orchestrator. Iterates through the query plan and collects
+    posts across L1 (trend), L2 (sweep), and L3 (home feed) sources.
+
+    Backward-compatible: MINING_MODE_HOME / MINING_MODE_SEARCH behave identically
+    to the original single-source collect_posts.
+    """
+    all_results: list[dict] = []
+    all_diagnostics: list[dict] = []
+    seen: set[str] = set()
+    stats = RejectStats()
+
+    # Fetch trend signal once for the entire auto run.
+    trend_keywords: list[str] = []
+    trend_brief = config.trend_brief
+    if not trend_brief and config.mining_mode == MINING_MODE_AUTO and config.trend_keywords_limit > 0:
+        trend_keywords, trend_brief = fetch_trend_keywords(config.trend_keywords_limit)
+
+    query_plan = build_query_plan(config, trend_keywords=trend_keywords)
+    log(f"=== Auto mining plan: mode={config.mining_mode} sources={len(query_plan)} max_posts={config.max_posts} ===")
+    for job in query_plan:
+        log(f"  job: source={job['source']!r} scroll={job['scroll_count']} quota={job['posts_quota']}")
+
+    for job in query_plan:
+        remaining = config.max_posts - len(all_results)
+        if remaining <= 0:
+            log("=== max_posts quota reached — skipping remaining sources ===")
+            break
+
+        effective_quota = min(job["posts_quota"], remaining + max(0, remaining // 2))
+        accepted, diags = await _collect_from_source(
+            page=page,
+            config=config,
+            query=job["query"],
+            source_label=job["source"],
+            scroll_count=job["scroll_count"],
+            posts_quota=effective_quota,
+            seen=seen,
+            stats=stats,
+            trend_brief=trend_brief,
+        )
+        all_results.extend(accepted)
+        all_diagnostics.extend(diags)
+
+    # ── Summary ──
+    log(f"=== Mining complete: sources={len(query_plan)} total_accepted={len(all_results)} ===")
     stats.log_summary()
 
     if config.dry_run:
-        diagnostics.sort(key=lambda d: (0 if d.get("accepted") else 1, -int(d.get("engagement_score", 0))))
-        return diagnostics[: max(config.max_posts * 4, 40)]
+        all_diagnostics.sort(key=lambda d: (0 if d.get("accepted") else 1, -int(d.get("engagement_score", 0))))
+        return all_diagnostics[: max(config.max_posts * 4, 40)]
 
-    if not results:
+    if not all_results:
         await write_debug_artifacts(page, config, "threads_zero_results")
 
     return sorted(
-        results,
+        all_results,
         key=lambda item: item["content_fit_score"] * 1000 + item["engagement_score"],
         reverse=True,
     )[: config.max_posts]
+
 
 
 async def scrape(config: Config) -> list[dict]:
@@ -650,8 +908,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--headful", action="store_true")
     parser.add_argument("--dry-run", action="store_true",
                         help="Return full candidate diagnostics instead of accepted posts only.")
+    parser.add_argument("--search-keyword", default=os.getenv("THREADS_SEARCH_KEYWORD", "").strip(),
+                        help="Single-keyword search (sets mining-mode=search automatically).")
     parser.add_argument("--mock", action="store_true")
+    # ── Auto mining flags ──
+    parser.add_argument(
+        "--mining-mode",
+        choices=[MINING_MODE_AUTO, MINING_MODE_SEARCH, MINING_MODE_HOME],
+        default=os.getenv("THREADS_MINING_MODE", DEFAULT_MINING_MODE).strip().lower() or DEFAULT_MINING_MODE,
+        help=(
+            "auto  = L1 trend-keywords + L2 static sweeps + L3 home feed (default); "
+            "search = single --search-keyword (legacy); "
+            "home  = home feed only (legacy)."
+        ),
+    )
+    parser.add_argument(
+        "--trend-keywords-limit",
+        type=int,
+        default=int(os.getenv("THREADS_TREND_KEYWORDS_LIMIT", str(DEFAULT_TREND_KEYWORDS_LIMIT))),
+        help="How many RSS trend-keywords to auto-search on Threads (auto mode only).",
+    )
+    parser.add_argument(
+        "--sweep-scroll-count",
+        type=int,
+        default=int(os.getenv("THREADS_SWEEP_SCROLL_COUNT", str(DEFAULT_SWEEP_SCROLL_COUNT))),
+        help="Scroll count per query in L1/L2 sweep (shallower than home feed default).",
+    )
     return parser.parse_args()
+
 
 
 def mock_posts() -> list[dict]:
@@ -680,6 +964,11 @@ def main() -> int:
         else PROJECT_ROOT / args.debug_dir
     )
 
+    # If --search-keyword is given, force search mode (backward-compat)
+    mining_mode = args.mining_mode
+    if args.search_keyword.strip() and mining_mode == MINING_MODE_AUTO:
+        mining_mode = MINING_MODE_SEARCH
+
     config = Config(
         username=args.username,
         password=args.password,
@@ -696,12 +985,22 @@ def main() -> int:
         candidate_limit=max(args.candidate_limit, args.max_posts),
         min_content_fit_score=args.min_content_fit_score,
         dry_run=args.dry_run,
+        search_keyword=args.search_keyword.strip(),
+        mining_mode=mining_mode,
+        trend_keywords_limit=args.trend_keywords_limit,
+        sweep_scroll_count=args.sweep_scroll_count,
     )
 
-    log(f"Config: headless={config.headless} max_posts={config.max_posts} "
-        f"scroll={config.scroll_count} min_eng={config.min_engagement_score} "
+    log(
+        f"Config: mode={config.mining_mode} headless={config.headless} "
+        f"max_posts={config.max_posts} scroll={config.scroll_count} "
+        f"sweep_scroll={config.sweep_scroll_count} "
+        f"trend_kw_limit={config.trend_keywords_limit} "
+        f"min_eng={config.min_engagement_score} "
         f"min_strongest={config.min_strongest_metric_score} "
-        f"min_fit={config.min_content_fit_score} dry_run={config.dry_run}")
+        f"min_fit={config.min_content_fit_score} dry_run={config.dry_run}"
+        + (f" search_keyword={config.search_keyword!r}" if config.search_keyword else "")
+    )
 
     try:
         posts = asyncio.run(scrape(config))
@@ -712,6 +1011,7 @@ def main() -> int:
 
     print(json.dumps(posts, ensure_ascii=True))
     return 0
+
 
 
 if __name__ == "__main__":

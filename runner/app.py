@@ -19,6 +19,7 @@ from src.local_review import validate_review_token
 PROJECT_ROOT = Path("/workspace")
 ENV_PATH = PROJECT_ROOT / ".env"
 PYTHON_BIN = "python"
+PHASE3_VOICE_TIMEOUT_SECONDS = max(420, int(os.getenv("PHASE3_VOICE_TIMEOUT_SECONDS", "900")))
 
 app = FastAPI(title="n8n AI Video Runner")
 
@@ -26,6 +27,13 @@ app = FastAPI(title="n8n AI Video Runner")
 class Phase2Payload(BaseModel):
     id: str
     url: str
+
+
+class Phase1SearchPayload(BaseModel):
+    keyword: str
+    max_posts: int | None = None
+    chat_id: str = ""
+    requested_by: str = ""
 
 
 class Phase3VoicePayload(BaseModel):
@@ -82,6 +90,14 @@ def n8n_phase4_callback_url() -> str:
     )
 
 
+def n8n_phase1_search_callback_url() -> str:
+    load_dotenv(ENV_PATH, override=True)
+    return (
+        os.getenv("N8N_PHASE1_SEARCH_CALLBACK_URL", "").strip()
+        or "http://n8n:5678/webhook/phase1-search-callback"
+    )
+
+
 def forward_telegram_callback_to_n8n(payload: dict) -> None:
     target = n8n_phase4_callback_url()
     try:
@@ -90,11 +106,23 @@ def forward_telegram_callback_to_n8n(payload: dict) -> None:
         print(f"Could not forward Telegram callback to n8n: {exc}", flush=True)
 
 
-def run_python(args: list[str], timeout: int) -> dict:
+def forward_phase1_search_to_n8n(payload: dict) -> None:
+    target = n8n_phase1_search_callback_url()
+    try:
+        requests.post(target, json=payload, timeout=1200).raise_for_status()
+    except Exception as exc:
+        print(f"Could not forward Phase 1 Telegram search to n8n: {exc}", flush=True)
+
+
+def run_python(args: list[str], timeout: int, extra_env: dict[str, str] | None = None) -> dict:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     try:
         result = subprocess.run(
             [PYTHON_BIN, *args],
             cwd=PROJECT_ROOT,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -165,6 +193,23 @@ def compact_error_detail(exc: Exception) -> str:
     return " ".join(message.split())[:500]
 
 
+def bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def failed_result(post_id: str, phase: str, exc: Exception, **extra: str) -> dict[str, str]:
     return {
         "ID": post_id,
@@ -172,6 +217,64 @@ def failed_result(post_id: str, phase: str, exc: Exception, **extra: str) -> dic
         "Note": f"{phase} failed: {compact_error_detail(exc)}",
         **extra,
     }
+
+
+def fetch_trend_signal(keyword: str = "") -> dict:
+    load_dotenv(ENV_PATH, override=True)
+    if not bool_env("TREND_SIGNAL_ENABLED", True):
+        return {"keyword": keyword, "topics": [], "brief": "", "context": [], "errors": ["trend signal disabled"]}
+    args = ["src/trend_signal.py"]
+    if keyword:
+        args.extend(["--keyword", keyword])
+    fetch_timeout = int_env("TREND_FETCH_TIMEOUT_SECONDS", 12)
+    data = run_python(args, timeout=int_env("TREND_RUN_TIMEOUT_SECONDS", max(30, fetch_timeout * 4)))
+    return data if isinstance(data, dict) else {"keyword": keyword, "topics": [], "brief": "", "context": []}
+
+
+def attach_phase1_context(posts: list[dict], trend_signal: dict, source: str, keyword: str = "") -> list[dict]:
+    brief = str(trend_signal.get("brief") or "").strip()
+    topics = trend_signal.get("topics") if isinstance(trend_signal.get("topics"), list) else []
+    news_context = trend_signal.get("context") if isinstance(trend_signal.get("context"), list) else []
+    output: list[dict] = []
+    for item in posts:
+        if not isinstance(item, dict):
+            continue
+        output.append({
+            **item,
+            "source": item.get("source") or source,
+            "search_keyword": item.get("search_keyword") or keyword,
+            "trend_brief": brief,
+            "trend_topics": topics[:10],
+            "news_context": news_context[:8],
+        })
+    return output
+
+
+def dedupe_posts(posts: list[dict]) -> list[dict]:
+    result: list[dict] = []
+    seen: set[str] = set()
+    for item in posts:
+        post_id = str(item.get("id") or "").strip()
+        if not post_id or post_id in seen:
+            continue
+        seen.add(post_id)
+        result.append(item)
+    return result
+
+
+def rank_phase1_posts(posts: list[dict], limit: int | None = None) -> list[dict]:
+    ranked = sorted(
+        posts,
+        key=lambda item: (
+            float(item.get("content_fit_score") or 0) * 1000.0
+            + float(item.get("engagement_score") or 0),
+            float(item.get("engagement_strongest_metric") or 0),
+        ),
+        reverse=True,
+    )
+    if limit is None or limit <= 0:
+        return ranked
+    return ranked[:limit]
 
 
 @app.get("/health")
@@ -255,12 +358,66 @@ async def phase4_telegram_callback(request: Request, background_tasks: Backgroun
     return {"status": "accepted"}
 
 
+@app.post("/phase1/telegram-search-callback")
+async def phase1_telegram_search_callback(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+    payload = await request.json()
+    background_tasks.add_task(forward_phase1_search_to_n8n, payload)
+    return {"status": "accepted"}
+
+
+@app.post("/phase1/noop")
+async def phase1_noop(request: Request) -> dict[str, object]:
+    payload = await request.json()
+    return payload if isinstance(payload, dict) else {"ok": True}
+
+
 @app.post("/phase1/threads-miner")
 def phase1_threads_miner() -> dict[str, object]:
-    posts = run_python(["src/threads_miner.py"], timeout=180)
+    load_dotenv(ENV_PATH, override=True)
+    trend_signal = fetch_trend_signal()
+    posts = run_python(["src/threads_miner.py"], timeout=int_env("THREADS_MINER_TIMEOUT_SECONDS", 420))
     if not isinstance(posts, list):
         raise HTTPException(status_code=500, detail={"message": "threads_miner.py must return a JSON array"})
-    return {"posts": posts}
+    return {"posts": dedupe_posts(attach_phase1_context(posts, trend_signal, source="auto")), "trend_signal": trend_signal}
+
+
+@app.post("/phase1/threads-search")
+def phase1_threads_search(payload: Phase1SearchPayload) -> dict[str, object]:
+    load_dotenv(ENV_PATH, override=True)
+    keyword = payload.keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=400, detail={"message": "keyword is required"})
+    trend_signal = fetch_trend_signal(keyword)
+    max_posts = max(1, min(50, payload.max_posts or int_env("THREADS_SEARCH_MAX_POSTS", 10)))
+    posts = run_python(
+        [
+            "src/threads_miner.py",
+            "--search-keyword",
+            keyword,
+            "--max-posts",
+            str(max_posts),
+            "--candidate-limit",
+            str(max(max_posts * 4, max_posts)),
+        ],
+        timeout=int_env("THREADS_SEARCH_TIMEOUT_SECONDS", 240),
+    )
+    if not isinstance(posts, list):
+        raise HTTPException(status_code=500, detail={"message": "threads_miner.py must return a JSON array"})
+    attached_posts = attach_phase1_context(posts, trend_signal, source=f"search:{keyword}", keyword=keyword)
+    top_limit = max(1, min(10, int_env("THREADS_SEARCH_TOP_RESULTS", 2)))
+    ranked_posts = rank_phase1_posts(dedupe_posts(attached_posts), limit=top_limit)
+    return {
+        "posts": ranked_posts,
+        "trend_signal": trend_signal,
+        "request": {
+            "keyword": keyword,
+            "max_posts": max_posts,
+            "chat_id": payload.chat_id,
+            "requested_by": payload.requested_by,
+        },
+        "post_count": len(ranked_posts),
+        "raw_post_count": len(posts),
+    }
 
 
 @app.post("/phase2/screenshot-extract")
@@ -299,7 +456,7 @@ def phase3_voice(payload: Phase3VoicePayload) -> dict:
                 "--extracted-content",
                 payload.extracted_content,
             ],
-            timeout=420,
+            timeout=PHASE3_VOICE_TIMEOUT_SECONDS,
         )
         if not isinstance(data, dict):
             raise RuntimeError("video_factory.py voice mode must return a JSON object")

@@ -15,6 +15,8 @@ Project structure was cleaned up on 2026-04-23: Python scripts now live in `src/
   - [x] Sets `Status = Pending`.
   - [x] Deduplicates by `ID` before appending.
   - [x] Added AI classifier gate in the workflow so only `discussion` / `story_hot` candidates are appended to the sheet.
+  - [x] Adds RSS trend context to the classifier and supports keyword search via `POST /phase1/threads-search`.
+  - [x] Adds a Telegram search bot branch in `workflows/01-threads-miner.json` so admins can send `/search <keyword>`.
   - [x] Confirmed working in n8n on 2026-04-23.
 
 - [x] **Phase 2: Screenshot + Extract MVP**

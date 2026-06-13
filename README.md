@@ -133,6 +133,7 @@ Use a tab named `Threads`. The important columns are:
 ```text
 ID
 Source_URL
+Source
 Source_Text
 Author
 Status
@@ -156,6 +157,11 @@ Updated_At
 ```
 
 See `docs/02-database-schema.md` for the fuller schema.
+
+Phase 1 now supports two user-facing collection paths in the same workflow:
+
+- Auto mining: the schedule/manual branch calls `/phase1/threads-miner`. The miner searches RSS-derived trend keywords, static mass-appeal queries, then Home feed fallback, and the runner injects RSS trend context into the Gemini classifier.
+- Search by topic: the `Telegram Search Bot` branch listens for admin Telegram messages. Send `/search <keyword>` or `/search <keyword> | <max_posts>`, for example `/search gia vang | 10`. It calls `/phase1/threads-search`, then reuses the same classifier, dedupe, and append nodes as the auto branch.
 
 ## Running The Pipeline
 
@@ -236,7 +242,8 @@ docker compose up -d runner
 7. Set the Telegram bot webhook to the runner callback endpoint:
 
 ```powershell
-curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/phase4/telegram-callback"
+curl "https://api.telegram.org/bot<TELEGRAM__PHASE4_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/phase4/telegram-callback"
+curl "https://api.telegram.org/bot<TELEGRAM_PHASE1_BOT_TOKEN>/setWebhook?url=https://example.ngrok-free.app/phase1/telegram-search-callback"
 ```
 
 For n8n test mode, temporarily set `N8N_PHASE4_CALLBACK_URL` to the `/webhook-test/...` URL inside the Docker network, then switch it back to `/webhook/...` when the workflow is active.

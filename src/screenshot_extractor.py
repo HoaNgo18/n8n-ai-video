@@ -152,6 +152,7 @@ CONTINUATION_MARKER_RE = re.compile(
     r"(?:^|[\s(])(?:\d+\s*/\s*\d+|part\s*\d+|p\s*\d+|\(\s*\d+\s*\))(?:$|[\s).,:;-])",
     re.IGNORECASE,
 )
+REPLY_TARGET_RE = re.compile(r"(?:reply to|trả lời)\s+@?([A-Za-z0-9_.]+)", re.IGNORECASE)
 VIET_PATTERN = re.compile(
     "["
     "\\u00e0\\u00e1\\u00e2\\u00e3\\u00e8\\u00e9\\u00ea\\u00ec\\u00ed"
@@ -161,7 +162,7 @@ VIET_PATTERN = re.compile(
     "]",
     re.IGNORECASE,
 )
-THREADS_TIME_UNIT_RE = r"(?:s|m|h|d|w|giây|phút|giờ|ngày|tuần|tháng|năm)"
+THREADS_TIME_UNIT_RE = r"(?:s|m|h|d|w|giây|giay|phút|phut|giờ|gio|ngày|ngay|tuần|tuan|tháng|thang|năm|nam)"
 
 
 @dataclass(frozen=True)
@@ -421,6 +422,32 @@ def strip_leading_handle_and_time(text: str) -> str:
     return clean_text(text)
 
 
+def strip_leading_topic_banner(text: str) -> str:
+    text = clean_text(text)
+    if not text:
+        return ""
+
+    text = re.sub(
+        rf"^[›>»]+\s*[A-Z0-9\u00c0-\u1ef8][A-Z0-9\u00c0-\u1ef8\s'\"()&+:/_-]{{4,90}}\s+\d+\s*{THREADS_TIME_UNIT_RE}\b\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"^(?:Pinned\s+)?@?[A-Za-z0-9_.]+\s*[›>»]+\s*[A-Z0-9\u00c0-\u1ef8][A-Z0-9\u00c0-\u1ef8\s'\"()&+:/_-]{{4,90}}\s+\d+\s*{THREADS_TIME_UNIT_RE}\b\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"^[A-Z0-9\u00c0-\u1ef8][A-Z0-9\u00c0-\u1ef8\s'\"()&+:/_-]{{6,90}}\s+\d+\s*{THREADS_TIME_UNIT_RE}\b\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return clean_text(text)
+
+
 def strip_leading_known_author(text: str, *author_values: object) -> str:
     text = clean_text(text)
     candidates = []
@@ -516,6 +543,8 @@ def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
     text = strip_trailing_metrics(text)
     text = strip_threads_context_noise(text)
     text = strip_leading_handle_and_time(text)
+    if not is_comment:
+        text = strip_leading_topic_banner(text)
     text = strip_embedded_attachment_text(text)
     text = re.sub(r"\b\d+\s*[smhdw]\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"^\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?[\s:.,;-]*", " ", text)
@@ -602,6 +631,11 @@ def trim_ui_text(text: str) -> str:
     return clean_text(text)
 
 
+def reply_target_author(raw_text: str) -> str:
+    match = REPLY_TARGET_RE.search(raw_text or "")
+    return normalize_search_text(match.group(1)) if match else ""
+
+
 def dedupe_comments(comments: list[dict[str, str]]) -> list[dict[str, str]]:
     unique = []
     seen = set()
@@ -620,6 +654,10 @@ def dedupe_comments(comments: list[dict[str, str]]) -> list[dict[str, str]]:
                 "text": text,
                 "author_name": comment.get("author_name", ""),
                 "author_key": comment.get("author_key", ""),
+                "image_index": comment.get("image_index"),
+                "group_id": comment.get("group_id"),
+                "group_size": comment.get("group_size"),
+                "group_position": comment.get("group_position"),
             }
         )
 
@@ -796,7 +834,14 @@ def build_content_segments(
         )
         if not cleaned:
             continue
-        image_index += 1
+        raw_image_index = item.get("image_index")
+        if raw_image_index is None:
+            image_index += 1
+        else:
+            try:
+                image_index = max(image_index, int(raw_image_index))
+            except (TypeError, ValueError):
+                image_index += 1
         segments.append(
             {
                 "type": "comment",
@@ -804,6 +849,9 @@ def build_content_segments(
                 "image_index": image_index,
                 "author_name": item.get("author_name", ""),
                 "author_key": item.get("author_key", ""),
+                "group_id": item.get("group_id"),
+                "group_size": item.get("group_size"),
+                "group_position": item.get("group_position"),
             }
         )
 
@@ -823,6 +871,118 @@ def detect_content_mode(post_text: str, continuations: list[dict[str, str]], com
     if discussion_hits or len(reasoning_comments) >= 2 or len(comments) >= 4:
         return "discussion"
     return "general"
+
+
+def should_group_comment_blocks(upper: dict, lower: dict) -> bool:
+    upper_rect = upper.get("rect", {}) or {}
+    lower_rect = lower.get("rect", {}) or {}
+    upper_top = rect_document_top(upper_rect)
+    upper_bottom = rect_document_bottom(upper_rect)
+    lower_top = rect_document_top(lower_rect)
+    lower_bottom = rect_document_bottom(lower_rect)
+
+    if lower_top <= upper_top or lower_bottom <= upper_bottom:
+        return False
+
+    vertical_gap = lower_top - upper_bottom
+    if vertical_gap < -8 or vertical_gap > 22:
+        return False
+
+    upper_x = float(upper_rect.get("x", 0) or 0)
+    lower_x = float(lower_rect.get("x", 0) or 0)
+    if lower_x < upper_x - 16 or lower_x > upper_x + 84:
+        return False
+
+    upper_width = float(upper_rect.get("width", 0) or 0)
+    lower_width = float(lower_rect.get("width", 0) or 0)
+    min_group_width = max(220.0, MIN_SCREENSHOT_BLOCK_WIDTH * 0.7)
+    if upper_width < min_group_width or lower_width < min_group_width:
+        return False
+    if lower_width < upper_width * 0.72:
+        return False
+
+    upper_meta = upper.get("meta", {}) or {}
+    lower_media = lower.get("media", {}) or {}
+    upper_author_key = str(upper_meta.get("author_key") or "")
+    lower_reply_target = reply_target_author(str(lower.get("text", "")))
+    is_explicit_reply = bool(lower_reply_target) and lower_reply_target == upper_author_key
+    has_connector_signal = bool(lower_media.get("has_thread_connector"))
+    if not (is_explicit_reply or has_connector_signal):
+        return False
+
+    x_delta = abs(lower_x - upper_x)
+    width_ratio = (min(upper_width, lower_width) / max(1.0, max(upper_width, lower_width)))
+    looks_like_reply_cluster = x_delta >= 12 or width_ratio <= 0.92
+    tightly_stacked_cluster = vertical_gap <= 12
+    if not looks_like_reply_cluster and not tightly_stacked_cluster:
+        return False
+
+    combined_height = lower_bottom - upper_top
+    if combined_height > 520:
+        return False
+
+    upper_text = cleanup_screen_text(upper.get("text", ""), is_comment=True)
+    lower_text = cleanup_screen_text(lower.get("text", ""), is_comment=True)
+    if len(upper_text.split()) < 8 or len(lower_text.split()) < 6:
+        return False
+
+    return True
+
+
+def should_expand_group_cumulatively(group: list[dict]) -> bool:
+    if len(group) >= 3:
+        return True
+    if len(group) < 2:
+        return False
+
+    upper_rect = group[0].get("rect", {}) or {}
+    lower_rect = group[1].get("rect", {}) or {}
+    upper_x = float(upper_rect.get("x", 0) or 0)
+    lower_x = float(lower_rect.get("x", 0) or 0)
+    upper_width = float(upper_rect.get("width", 0) or 0)
+    lower_width = float(lower_rect.get("width", 0) or 0)
+    width_ratio = (min(upper_width, lower_width) / max(1.0, max(upper_width, lower_width)))
+    return abs(lower_x - upper_x) >= 12 or width_ratio <= 0.92
+
+
+def build_comment_capture_groups(comment_blocks: list[dict]) -> list[list[dict]]:
+    ordered = sorted(comment_blocks, key=lambda block: rect_document_top(block.get("rect", {}) or {}))
+    groups: list[list[dict]] = []
+    current_group: list[dict] = []
+
+    for block in ordered:
+        if not current_group:
+            current_group = [block]
+            continue
+        if should_group_comment_blocks(current_group[-1], block):
+            current_group.append(block)
+            continue
+        groups.append(current_group)
+        current_group = [block]
+
+    if current_group:
+        groups.append(current_group)
+    return groups
+
+
+def merge_block_rects(blocks: list[dict]) -> dict:
+    rects = [block.get("rect", {}) or {} for block in blocks if block.get("rect")]
+    if not rects:
+        return {}
+
+    left = min(float(rect.get("x", 0) or 0) for rect in rects)
+    top = min(float(rect.get("y", 0) or 0) for rect in rects)
+    right = max(float(rect.get("x", 0) or 0) + float(rect.get("width", 0) or 0) for rect in rects)
+    bottom = max(float(rect.get("y", 0) or 0) + float(rect.get("height", 0) or 0) for rect in rects)
+    document_top = min(rect_document_top(rect) for rect in rects)
+
+    return {
+        "x": left,
+        "y": top,
+        "width": max(1.0, right - left),
+        "height": max(1.0, bottom - top),
+        "document_y": document_top,
+    }
 
 
 def is_continuation_block(block: dict, post_block: dict, sequence_index: int, post_author: str = "") -> bool:
@@ -1041,6 +1201,7 @@ async def get_pressable_blocks(page: Page) -> list[dict]:
                   const mediaItems = Array.from(el.querySelectorAll('img, video'));
                   let mediaArea = 0;
                   let largeMediaCount = 0;
+                  let hasThreadConnector = false;
                   for (const item of mediaItems) {
                     const rect = item.getBoundingClientRect();
                     if (rect.width < 80 || rect.height < 80) continue;
@@ -1048,11 +1209,28 @@ async def get_pressable_blocks(page: Page) -> list[dict]:
                     mediaArea += area;
                     if (rect.width >= 220 && rect.height >= 160) largeMediaCount += 1;
                   }
+                  for (const item of el.querySelectorAll('div, span, svg, line, path')) {
+                    const rect = item.getBoundingClientRect();
+                    if (rect.width > 12 || rect.height < 52) continue;
+                    const leftOffset = rect.left - rootRect.left;
+                    if (leftOffset < 18 || leftOffset > 128) continue;
+                    if (rect.top > rootRect.top + rootRect.height * 0.58) continue;
+                    const style = window.getComputedStyle(item);
+                    const hasVisibleStroke =
+                      style.backgroundColor !== 'rgba(0, 0, 0, 0)' ||
+                      style.borderLeftWidth !== '0px' ||
+                      style.borderRightWidth !== '0px' ||
+                      ['svg', 'line', 'path'].includes(String(item.tagName || '').toLowerCase());
+                    if (!hasVisibleStroke) continue;
+                    hasThreadConnector = true;
+                    break;
+                  }
                   const rootArea = Math.max(1, rootRect.width * rootRect.height);
                   return {
                     media_count: mediaItems.length,
                     large_media_count: largeMediaCount,
                     media_area_ratio: mediaArea / rootArea,
+                    has_thread_connector: hasThreadConnector,
                   };
                 }
                 """
@@ -1145,6 +1323,7 @@ def choose_post_and_comments(
     post_candidates = sorted(
         vietnamese_blocks or reasonable,
         key=lambda block: (
+            0 if normalize_search_text(str((block.get("meta", {}) or {}).get("author_name") or "")) == post_author else 1,
             0 if len(re.findall(r"\d+(?:[.,]\d+)?K?|\d+", block.get("text", ""), re.IGNORECASE)) >= 2 else 1,
             block.get("rect", {}).get("y", 99999),
             -block.get("rect", {}).get("height", 0),
@@ -1185,8 +1364,8 @@ def choose_post_and_comments(
     continuation_blocks.sort(key=lambda block: block.get("rect", {}).get("y", 99999))
     regular_comments.sort(
         key=lambda block: (
-            -int(block.get("meta", {}).get("engagement_score") or 0),
             block.get("rect", {}).get("y", 99999),
+            -int(block.get("meta", {}).get("engagement_score") or 0),
         )
     )
 
@@ -1209,6 +1388,107 @@ async def refresh_block_box(block: dict) -> dict:
         await handle.scroll_into_view_if_needed(timeout=5000)
     except Exception:
         pass
+
+    meta = block.get("meta", {}) or {}
+    try:
+        refined = await handle.evaluate(
+            """
+            (root, payload) => {
+              const normalize = (value) => (value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+              const snippet = normalize(payload.body || '').slice(0, 56);
+              const author = normalize(payload.author || '');
+              const rootRect = root.getBoundingClientRect();
+              const isVisible = (el) => {
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 24 || rect.height < 10) return false;
+                const style = window.getComputedStyle(el);
+                return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+              };
+
+              const scoreText = (text) => {
+                if (!text) return -1;
+                let score = 0;
+                if (snippet) {
+                  if (text.includes(snippet)) score += 6;
+                  else {
+                    const shortSnippet = snippet.slice(0, Math.min(snippet.length, 28));
+                    if (shortSnippet && text.includes(shortSnippet)) score += 3;
+                  }
+                }
+                if (author && text.includes(author)) score += 1;
+                return score;
+              };
+
+              let best = null;
+              for (const el of [root, ...root.querySelectorAll('*')]) {
+                if (!isVisible(el)) continue;
+                const text = normalize(el.innerText || '');
+                const score = scoreText(text);
+                if (score <= 0) continue;
+                const rect = el.getBoundingClientRect();
+                const area = rect.width * rect.height;
+                const distance = Math.abs(rect.top - rootRect.top) + Math.abs(rect.left - rootRect.left) * 0.15;
+                const candidate = { el, score, area, distance, rect };
+                if (
+                  !best ||
+                  score > best.score ||
+                  (score === best.score && area < best.area) ||
+                  (score === best.score && Math.abs(area - best.area) < 1 && distance < best.distance)
+                ) {
+                  best = candidate;
+                }
+              }
+
+              if (!best) return null;
+
+              let node = best.el;
+              while (node && node !== root) {
+                const parent = node.parentElement;
+                if (!parent || parent === root) break;
+                if (!isVisible(parent)) break;
+                const rect = node.getBoundingClientRect();
+                const parentRect = parent.getBoundingClientRect();
+                const widthRatio = parentRect.width / Math.max(1, rootRect.width);
+                const heightRatio = parentRect.height / Math.max(1, rootRect.height);
+                if (widthRatio >= 0.68 && heightRatio <= 0.86) {
+                  node = parent;
+                  continue;
+                }
+                break;
+              }
+
+              const finalRect = node.getBoundingClientRect();
+              return {
+                x: finalRect.x,
+                y: finalRect.y,
+                width: finalRect.width,
+                height: finalRect.height,
+              };
+            }
+            """,
+            {
+                "body": str(meta.get("body_text") or block.get("text") or ""),
+                "author": str(meta.get("author_name") or ""),
+            },
+        )
+        if refined:
+            rect = {
+                "x": float(refined.get("x", 0) or 0),
+                "y": float(refined.get("y", 0) or 0),
+                "width": float(refined.get("width", 0) or 0),
+                "height": float(refined.get("height", 0) or 0),
+            }
+            if rect["width"] >= MIN_SCREENSHOT_BLOCK_WIDTH * 0.75 and rect["height"] >= MIN_SCREENSHOT_BLOCK_HEIGHT:
+                try:
+                    scroll_y = float(await handle.evaluate("window.scrollY || 0"))
+                except Exception:
+                    scroll_y = 0.0
+                rect["document_y"] = float(rect.get("y", 0)) + scroll_y
+                block["rect"] = rect
+                return rect
+    except Exception:
+        pass
+
     try:
         box = await handle.bounding_box()
     except Exception:
@@ -1240,15 +1520,32 @@ async def find_current_matching_block(page: Page, block: dict) -> dict | None:
     if not target_key:
         return None
     candidates = [item for item in await get_pressable_blocks(page) if is_reasonable_pressable(item)]
+    original_rect = block.get("rect", {}) or {}
+    original_top = rect_document_top(original_rect)
+    original_height = float(original_rect.get("height", 0) or 0)
+
+    ranked_matches: list[tuple[int, float, float, dict]] = []
     for candidate in candidates:
         candidate_key = text_identity(candidate.get("text", ""))
+        if not candidate_key:
+            continue
         if candidate_key == target_key:
-            return candidate
-    for candidate in candidates:
-        candidate_key = text_identity(candidate.get("text", ""))
-        if target_key and (target_key in candidate_key or candidate_key in target_key):
-            return candidate
-    return None
+            match_rank = 0
+        elif target_key and (target_key in candidate_key or candidate_key in target_key):
+            match_rank = 1
+        else:
+            continue
+
+        candidate_rect = candidate.get("rect", {}) or {}
+        top_distance = abs(rect_document_top(candidate_rect) - original_top)
+        height_distance = abs(float(candidate_rect.get("height", 0) or 0) - original_height)
+        ranked_matches.append((match_rank, top_distance, height_distance, candidate))
+
+    if not ranked_matches:
+        return None
+
+    ranked_matches.sort(key=lambda item: (item[0], item[1], item[2]))
+    return ranked_matches[0][3]
 
 
 async def trim_post_rect_before_discussion_toolbar(page: Page, rect: dict) -> dict:
@@ -1381,6 +1678,74 @@ async def screenshot_block(page: Page, block: dict, output_path: Path, padding: 
     return captured and screenshot_image_is_valid(output_path)
 
 
+async def screenshot_block_group(page: Page, blocks: list[dict], output_path: Path, padding: int = 8) -> bool:
+    if not blocks:
+        return False
+
+    lead_block = blocks[0]
+    lead_rect = lead_block.get("rect", {}) or {}
+    document_y = lead_rect.get("document_y")
+    if document_y is not None:
+        try:
+            await page.evaluate("(y) => window.scrollTo(0, Math.max(0, y - 120))", float(document_y))
+            await page.wait_for_timeout(350)
+            await prepare_threads_page(page)
+        except Exception:
+            pass
+
+    refreshed_blocks: list[dict] = []
+    for block in blocks:
+        handle = block.get("handle")
+        box = None
+        if handle:
+            try:
+                await wait_for_element_media(page, handle)
+                box = await handle.bounding_box()
+            except Exception:
+                box = None
+        if box:
+            rect = dict(box)
+            try:
+                scroll_y = float(await page.evaluate("window.scrollY || 0"))
+            except Exception:
+                scroll_y = 0.0
+            rect["document_y"] = float(rect.get("y", 0) or 0) + scroll_y
+            block["rect"] = rect
+        else:
+            rect = block.get("rect", {}) or {}
+
+        if not rect or rect.get("width", 0) < MIN_SCREENSHOT_BLOCK_WIDTH * 0.5 or rect.get("height", 0) < 10:
+            relinked = await find_current_matching_block(page, block)
+            if relinked:
+                block.update(relinked)
+                handle = block.get("handle")
+                if handle:
+                    try:
+                        box = await handle.bounding_box()
+                    except Exception:
+                        box = None
+                    if box:
+                        rect = dict(box)
+                        try:
+                            scroll_y = float(await page.evaluate("window.scrollY || 0"))
+                        except Exception:
+                            scroll_y = 0.0
+                        rect["document_y"] = float(rect.get("y", 0) or 0) + scroll_y
+                        block["rect"] = rect
+                    else:
+                        rect = block.get("rect", {}) or {}
+        if rect and rect.get("width", 0) >= MIN_SCREENSHOT_BLOCK_WIDTH * 0.5 and rect.get("height", 0) >= 10:
+            refreshed_blocks.append(block)
+
+    merged_rect = merge_block_rects(refreshed_blocks or blocks)
+    if merged_rect.get("width", 0) < MIN_SCREENSHOT_BLOCK_WIDTH or merged_rect.get("height", 0) < MIN_SCREENSHOT_BLOCK_HEIGHT:
+        log(f"Skipping too-small grouped block before clip screenshot: rect={merged_rect}")
+        return False
+
+    captured = await screenshot_clip(page, merged_rect, output_path, padding=padding)
+    return captured and screenshot_image_is_valid(output_path)
+
+
 async def screenshot_post_and_comments(
     page: Page,
     post_id: str,
@@ -1474,7 +1839,20 @@ async def screenshot_post_and_comments(
         return {"post": str(post_path), "comments": []}, {"post_text": "", "comments": []}
 
     await wait_for_element_media(page, post_block["handle"])
-    post_rect = await refresh_block_box(post_block)
+    try:
+        raw_post_box = await post_block["handle"].bounding_box()
+    except Exception:
+        raw_post_box = None
+    if raw_post_box:
+        post_rect = dict(raw_post_box)
+        try:
+            scroll_y = float(await page.evaluate("window.scrollY || 0"))
+        except Exception:
+            scroll_y = 0.0
+        post_rect["document_y"] = float(post_rect.get("y", 0) or 0) + scroll_y
+        post_block["rect"] = post_rect
+    else:
+        post_rect = await refresh_block_box(post_block)
     post_rect = await trim_post_rect_before_discussion_toolbar(page, post_rect)
     if not await screenshot_clip(page, post_rect, post_path, padding=8):
         log("Could not capture isolated post clip; falling back to primary visible area.")
@@ -1483,26 +1861,51 @@ async def screenshot_post_and_comments(
     comment_paths = []
     extracted_comments = []
     extracted_continuations = []
-    ordered_blocks = continuation_blocks + comment_blocks
-    for index, block in enumerate(ordered_blocks, start=1):
-        comment_path = comments_dir / f"comment_{index:02d}.png"
+
+    for block in continuation_blocks:
+        comment_path = comments_dir / f"comment_{len(comment_paths) + 1:02d}.png"
         captured = await screenshot_block(page, block, comment_path, padding=8)
         if not captured:
-            log(f"Skipping extracted block without screenshot: index={index}")
+            log("Skipping continuation block without screenshot")
             continue
 
+        image_index = len(comment_paths) + 1
         comment_paths.append(str(comment_path))
-        cleaned_text = trim_ui_text(block.get("text", ""))
         meta = block.get("meta", {})
-        content_item = {
-            "text": cleaned_text,
-            "author_name": meta.get("author_name", ""),
-            "author_key": meta.get("author_key", ""),
-        }
-        if is_continuation_block(block, post_block, index, post_author):
-            extracted_continuations.append(content_item)
-        else:
-            extracted_comments.append(content_item)
+        extracted_continuations.append(
+            {
+                "text": trim_ui_text(block.get("text", "")),
+                "author_name": meta.get("author_name", ""),
+                "author_key": meta.get("author_key", ""),
+                "image_index": image_index,
+            }
+        )
+
+    group_counter = 0
+    for group in build_comment_capture_groups(comment_blocks):
+        group_counter += 1
+        group_size = len(group)
+        for position, block in enumerate(group, start=1):
+            comment_path = comments_dir / f"comment_{len(comment_paths) + 1:02d}.png"
+            captured = await screenshot_block(page, block, comment_path, padding=8)
+            if not captured:
+                log(f"Skipping comment block group={group_counter} pos={position}/{group_size}")
+                continue
+
+            image_index = len(comment_paths) + 1
+            comment_paths.append(str(comment_path))
+            meta = block.get("meta", {})
+            extracted_comments.append(
+                {
+                    "text": trim_ui_text(block.get("text", "")),
+                    "author_name": meta.get("author_name", ""),
+                    "author_key": meta.get("author_key", ""),
+                    "image_index": image_index,
+                    "group_id": group_counter,
+                    "group_size": group_size,
+                    "group_position": position,
+                }
+            )
 
     screenshots = {"post": str(post_path), "comments": comment_paths}
     extracted = {

@@ -70,6 +70,7 @@ BACKGROUND_MUSIC_PATH = os.getenv("BACKGROUND_MUSIC_PATH", "").strip()
 BACKGROUND_MUSIC_PICK = os.getenv("BACKGROUND_MUSIC_PICK", "hash").strip().lower() or "hash"
 BACKGROUND_MUSIC_VOLUME = max(0.0, min(1.0, float(os.getenv("BACKGROUND_MUSIC_VOLUME", "0.08"))))
 BACKGROUND_MUSIC_FADE_SECONDS = max(0.0, min(6.0, float(os.getenv("BACKGROUND_MUSIC_FADE_SECONDS", "1.5"))))
+BACKGROUND_VIDEO_START_OFFSET_SECONDS = max(0.0, float(os.getenv("BACKGROUND_VIDEO_START_OFFSET_SECONDS", "2.0")))
 BACKGROUND_MUSIC_START_OFFSET_SECONDS = max(0.0, float(os.getenv("BACKGROUND_MUSIC_START_OFFSET_SECONDS", "0.0")))
 BACKGROUND_MUSIC_DUCKING = str(os.getenv("BACKGROUND_MUSIC_DUCKING", "true")).strip().lower() in {"1", "true", "yes"}
 MAX_OVERLAY_IMAGES = 40
@@ -79,9 +80,14 @@ AUDIO_SILENCE_THRESHOLD_DB = os.getenv("AUDIO_SILENCE_THRESHOLD_DB", "-45dB")
 AUDIO_LEADING_SILENCE_SECONDS = float(os.getenv("AUDIO_LEADING_SILENCE_SECONDS", "0.08"))
 AUDIO_TRAILING_SILENCE_SECONDS = float(os.getenv("AUDIO_TRAILING_SILENCE_SECONDS", "0.18"))
 AUDIO_SEGMENT_OVERLAP_SECONDS = max(0.0, float(os.getenv("AUDIO_SEGMENT_OVERLAP_SECONDS", "0.15")))
-AUDIO_MAX_SEGMENTS = max(0, int(os.getenv("AUDIO_MAX_SEGMENTS", "7")))
-AUDIO_MAX_POST_CHARS = max(80, int(os.getenv("AUDIO_MAX_POST_CHARS", "220")))
-AUDIO_MAX_COMMENT_CHARS = max(80, int(os.getenv("AUDIO_MAX_COMMENT_CHARS", "260")))
+AUDIO_MAX_SEGMENTS = max(0, int(os.getenv("AUDIO_MAX_SEGMENTS", "0")))
+AUDIO_MAX_POST_CHARS = max(80, int(os.getenv("AUDIO_MAX_POST_CHARS", "500")))
+AUDIO_MAX_COMMENT_CHARS = max(80, int(os.getenv("AUDIO_MAX_COMMENT_CHARS", "700")))
+MIN_VIDEO_SECONDS = max(30.0, float(os.getenv("MIN_VIDEO_SECONDS", "60")))
+TARGET_VIDEO_SECONDS = max(MIN_VIDEO_SECONDS, float(os.getenv("TARGET_VIDEO_SECONDS", str(MIN_VIDEO_SECONDS))))
+TARGET_AUDIO_SECONDS = max(20.0, float(os.getenv("TARGET_AUDIO_SECONDS", str(TARGET_VIDEO_SECONDS))))
+TARGET_AUDIO_SEGMENTS = max(2, int(os.getenv("TARGET_AUDIO_SEGMENTS", "7")))
+FINAL_FRAME_HOLD_SECONDS = max(0.8, float(os.getenv("FINAL_FRAME_HOLD_SECONDS", "1.6")))
 VIENEU_TTS_ENABLED = str(os.getenv("VIENEU_TTS_ENABLED", "false")).strip().lower() in {"1", "true", "yes"}
 VIENEU_MODE = os.getenv("VIENEU_MODE", "standard").strip() or "standard"
 VIENEU_BACKBONE_REPO = os.getenv("VIENEU_BACKBONE_REPO", "").strip()
@@ -290,6 +296,7 @@ def probe_duration(path: Path) -> float:
 def normalize_tts_shorthand(text: str) -> str:
     text = str(text or "")
     replacements = [
+        (r"\bwtf\b", "what the fuck"),
         (r"\bbọn\s+tớ\b", "bọn tao"),
         (r"\btụi\s+tớ\b", "tụi tao"),
         (r"\bbọn\s+t\b", "bọn tao"),
@@ -503,6 +510,9 @@ def parse_extracted_segments(extracted_content: str | None) -> list[dict]:
                 "image_index": image_index,
                 "author_name": str(item.get("author_name") or ""),
                 "author_key": str(item.get("author_key") or ""),
+                "group_id": item.get("group_id"),
+                "group_size": item.get("group_size"),
+                "group_position": item.get("group_position"),
             }
         )
     return parsed_segments
@@ -608,6 +618,89 @@ def prepare_overlay_images(paths: list[Path], output_dir: Path) -> list[Path]:
     return prepared
 
 
+def build_progressive_group_composites(
+    styled_paths: list[Path],
+    output_dir: Path,
+    gap: int = 24,
+) -> list[Path]:
+    if not styled_paths:
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    images = [Image.open(path).convert("RGBA") for path in styled_paths]
+    try:
+        target_width = max(image.width for image in images)
+        resized: list[Image.Image] = []
+        for image in images:
+            if image.width != target_width:
+                ratio = target_width / max(1, image.width)
+                image = image.resize((target_width, round(image.height * ratio)), Image.LANCZOS)
+            resized.append(image)
+
+        composites: list[Path] = []
+        for index in range(len(resized)):
+            subset = resized[: index + 1]
+            total_height = sum(image.height for image in subset) + gap * max(0, len(subset) - 1)
+            canvas = Image.new("RGBA", (target_width, total_height), (0, 0, 0, 0))
+            y = 0
+            for image in subset:
+                canvas.alpha_composite(image, (0, y))
+                y += image.height + gap
+            output_path = output_dir / f"group_step_{index + 1:02d}.png"
+            canvas.save(output_path, format="PNG", optimize=True)
+            composites.append(output_path)
+        return composites
+    finally:
+        for image in images:
+            image.close()
+
+
+def apply_progressive_group_overlays(images: list[Path], extracted_content: str, output_dir: Path) -> list[Path]:
+    segments = parse_extracted_segments(extracted_content)
+    if not segments:
+        return images
+
+    groups: dict[int, list[dict]] = {}
+    for segment in segments:
+        try:
+            group_id = int(segment.get("group_id"))
+            group_size = int(segment.get("group_size", 1) or 1)
+            group_position = int(segment.get("group_position", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if group_size <= 1 or group_position <= 0:
+            continue
+        groups.setdefault(group_id, []).append(segment)
+
+    if not groups:
+        return images
+
+    remapped = list(images)
+    for group_id, members in groups.items():
+        ordered_members = sorted(members, key=lambda item: int(item.get("group_position", 0) or 0))
+        member_indexes: list[int] = []
+        styled_paths: list[Path] = []
+        for member in ordered_members:
+            try:
+                image_index = int(member.get("image_index"))
+            except (TypeError, ValueError):
+                continue
+            if image_index < 0 or image_index >= len(remapped):
+                continue
+            member_indexes.append(image_index)
+            styled_paths.append(remapped[image_index])
+
+        if len(styled_paths) <= 1:
+            continue
+
+        composites = build_progressive_group_composites(styled_paths, output_dir / f"group_{group_id}")
+        for composite_index, image_index in enumerate(member_indexes):
+            if composite_index < len(composites):
+                remapped[image_index] = composites[composite_index]
+
+    return remapped
+
+
 def estimate_duration(text: str, image_count: int) -> float:
     word_count = len(re.findall(r"\S+", text))
     by_words = max(12.0, word_count / 2.55)
@@ -705,7 +798,7 @@ def trim_audio_segment_text(text: str, max_chars: int) -> str:
     return clipped.rstrip(".,;:!?") + "."
 
 
-def apply_audio_segment_limits(segments: list[dict]) -> list[dict]:
+def apply_audio_segment_limits(segments: list[dict], max_segments: int | None = None) -> list[dict]:
     limited: list[dict] = []
     for item in segments:
         segment = dict(item)
@@ -715,9 +808,64 @@ def apply_audio_segment_limits(segments: list[dict]) -> list[dict]:
         if clean_script(str(segment.get("text") or "")):
             limited.append(segment)
 
-    if AUDIO_MAX_SEGMENTS > 0:
-        limited = limited[:AUDIO_MAX_SEGMENTS]
+    segment_limit = AUDIO_MAX_SEGMENTS if max_segments is None else max(0, int(max_segments))
+    if segment_limit > 0:
+        limited = limited[:segment_limit]
     return limited
+
+
+def estimate_audio_segment_seconds(segment: dict) -> float:
+    text = clean_script(str(segment.get("text") or ""))
+    if not text:
+        return 0.0
+    word_count = len(re.findall(r"\S+", text))
+    char_count = len(text)
+    estimated = max(2.4, word_count / 2.45, char_count / 17.0)
+    if str(segment.get("type") or "").strip().lower() == "comment":
+        estimated += 0.2
+    return min(14.0, round(estimated, 2))
+
+
+def evenly_spaced_segment_indexes(total_segments: int, wanted_segments: int) -> list[int]:
+    if total_segments <= 0 or wanted_segments <= 0:
+        return []
+    if wanted_segments >= total_segments:
+        return list(range(total_segments))
+    if wanted_segments == 1:
+        return [0]
+
+    indexes = []
+    for position in range(wanted_segments):
+        index = round(position * (total_segments - 1) / (wanted_segments - 1))
+        if not indexes or index != indexes[-1]:
+            indexes.append(index)
+
+    if indexes[-1] != total_segments - 1:
+        indexes[-1] = total_segments - 1
+    return indexes
+
+
+def cap_audio_segments_to_target_duration(segments: list[dict], target_seconds: float) -> list[dict]:
+    if len(segments) <= 2 or target_seconds <= 0:
+        return segments
+
+    estimates = [estimate_audio_segment_seconds(item) for item in segments]
+    total_estimated = sum(estimates)
+    if total_estimated <= target_seconds:
+        return segments
+
+    minimum_segments = min(len(segments), TARGET_AUDIO_SEGMENTS)
+    selected: list[dict] = []
+    accumulated = 0.0
+    for index, segment in enumerate(segments):
+        selected.append(segment)
+        accumulated += estimates[index]
+        if len(selected) >= minimum_segments and accumulated >= target_seconds:
+            break
+
+    if not selected:
+        return segments[:minimum_segments]
+    return selected
 
 
 def select_overlay_text_blocks(
@@ -753,7 +901,8 @@ def select_audio_segments(script: str, extracted_content: str = "") -> list[dict
     segment_source = str(os.getenv("AUDIO_SEGMENT_SOURCE", "extracted")).strip().lower()
 
     if extracted_segments and (segment_source == "extracted" or content_mode == "story"):
-        return apply_audio_segment_limits(remove_embedded_later_segments(extracted_segments))
+        segments = apply_audio_segment_limits(remove_embedded_later_segments(extracted_segments), max_segments=0)
+        return cap_audio_segments_to_target_duration(segments, TARGET_AUDIO_SECONDS)
 
     if not script_sections:
         return []
@@ -775,9 +924,11 @@ def select_audio_segments(script: str, extracted_content: str = "") -> list[dict
                     "author_key": matched_segment.get("author_key", ""),
                 }
             )
-        return apply_audio_segment_limits(remove_embedded_later_segments(paired_segments))
+        segments = apply_audio_segment_limits(remove_embedded_later_segments(paired_segments), max_segments=0)
+        return cap_audio_segments_to_target_duration(segments, TARGET_AUDIO_SECONDS)
 
-    return apply_audio_segment_limits([{"type": "segment", "text": text} for text in script_sections])
+    segments = apply_audio_segment_limits([{"type": "segment", "text": text} for text in script_sections])
+    return cap_audio_segments_to_target_duration(segments, TARGET_AUDIO_SECONDS)
 
 
 def overlap_key(text: str) -> str:
@@ -1196,7 +1347,6 @@ def concat_normalized_audio_files(paths: list[Path], output_path: Path, overlap_
 def build_timing_manifest_from_segments(timed_segments: list[dict], audio_duration: float, overlap_seconds: float = 0.0) -> list[dict]:
     cursor = 0.0
     manifest = []
-    overlap_seconds = round(max(0.0, min(float(overlap_seconds or 0.0), 0.35)), 3)
 
     for index, item in enumerate(timed_segments):
         duration = max(0.0, float(item.get("duration", 0.0) or 0.0))
@@ -1212,7 +1362,7 @@ def build_timing_manifest_from_segments(timed_segments: list[dict], audio_durati
                 "type": item.get("type", "segment"),
             }
         )
-        cursor = max(start, end - overlap_seconds)
+        cursor = end
 
     return manifest
 
@@ -1579,8 +1729,7 @@ def build_overlay_plan_from_timing(paths: list[Path], timing_data: list[dict], d
         next_start = float(plan[index + 1]["start"]) if index + 1 < len(plan) else duration
         item["end"] = round(min(max(float(item["start"]) + 0.2, float(item["end"])), next_start), 3)
     if plan:
-        last_audio_end = float(plan[-1]["end"])
-        plan[-1]["end"] = round(min(last_audio_end, duration), 3)
+        plan[-1]["end"] = round(duration, 3)
     return plan
 
 
@@ -1643,7 +1792,10 @@ def build_visual_ffmpeg(background_path: Path, output_path: Path, overlays: list
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
 
     if background_path.exists():
-        command.extend(["-stream_loop", "-1", "-i", str(background_path)])
+        command.extend(["-stream_loop", "-1"])
+        if BACKGROUND_VIDEO_START_OFFSET_SECONDS > 0:
+            command.extend(["-ss", f"{BACKGROUND_VIDEO_START_OFFSET_SECONDS:.3f}"])
+        command.extend(["-i", str(background_path)])
         bg_label = "[0:v]scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},fps={fps},trim=duration={duration},setpts=PTS-STARTPTS[base]".format(
             width=target_w,
             height=target_h,
@@ -1843,14 +1995,15 @@ def build_visual(
         # Match visual length to the generated narration instead of hard-capping
         # at short-form defaults, otherwise the final merge trims the audio.
         audio_duration = probe_duration(audio_path)
-        duration = max(1.0, audio_duration)
+        duration = max(MIN_VIDEO_SECONDS, audio_duration + FINAL_FRAME_HOLD_SECONDS)
     else:
         duration = estimate_duration(clean_script(script), len(images)) + 2.0
-        duration = min(120.0, max(10.0, duration))
+        duration = min(120.0, max(MIN_VIDEO_SECONDS, duration))
 
     output_dir = dated_output_dir(visuals_dir, post_id)
     output_path = output_dir / "visual.mp4"
     images = prepare_overlay_images(images, output_dir / "overlays")
+    images = apply_progressive_group_overlays(images, extracted_content, output_dir / "overlays")
     overlay_plan = build_overlay_plan_from_timing(images, timing_data, duration) if timing_data else []
     if not overlay_plan:
         overlay_plan = build_overlay_plan(images, text_blocks, duration)
@@ -1875,7 +2028,8 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
     output_dir = dated_output_dir(videos_dir, post_id)
     output_path = output_dir / "final.mp4"
     audio_duration = probe_duration(audio_path)
-    duration = max(1.0, audio_duration)
+    visual_duration = probe_duration(visual_path)
+    duration = max(MIN_VIDEO_SECONDS, visual_duration, audio_duration + FINAL_FRAME_HOLD_SECONDS)
     music_path = choose_background_music(post_id)
 
     command = [
@@ -1924,13 +2078,14 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
             "[1:a]aresample=44100:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS[voicebase];"
             f"{voice_split_filter}"
             f"{music_filter};"
-            f"[{voice_mix_label}][{music_label}]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            f"[{voice_mix_label}][{music_label}]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
             "alimiter=limit=0.95[a]"
         )
     else:
+        pad_seconds = max(0.0, duration - audio_duration)
         filter_complex = (
             "[0:v]setpts=PTS-STARTPTS,fps=30[v];"
-            "[1:a]aresample=44100:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS[a]"
+            f"[1:a]aresample=44100:first_pts=0,aformat=sample_fmts=fltp:channel_layouts=mono,asetpts=PTS-STARTPTS,apad=pad_dur={pad_seconds:.3f}[a]"
         )
 
     command.extend(

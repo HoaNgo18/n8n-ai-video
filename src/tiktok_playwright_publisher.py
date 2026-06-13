@@ -65,7 +65,7 @@ def resolve_path(value: str | Path) -> Path:
 
 
 def send_telegram_notification(message: str) -> None:
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    bot_token = os.getenv("TELEGRAM__PHASE4_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not bot_token or not chat_id:
         return

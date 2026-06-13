@@ -73,7 +73,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ \"https://api.telegram.org/bot\" + $env.TELEGRAM_BOT_TOKEN + \"/sendMessage\" }}",
+        "url": "={{ \"https://api.telegram.org/bot\" + $env.TELEGRAM__PHASE4_BOT_TOKEN + \"/sendMessage\" }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { chat_id: $env.TELEGRAM_CHAT_ID, text: ['Phase 4 draft ready for review', '', 'ID: ' + $json.ID, 'Review video: ' + $json.Draft_Video_URL, '', 'Caption:', String($json.Caption || '').slice(0, 900), '', 'Choose an admin decision below.'].join('\\n'), disable_web_page_preview: false, reply_markup: { inline_keyboard: [[ { text: 'Approve', callback_data: 'phase4|approve|' + $json.ID }, { text: 'Reject', callback_data: 'phase4|reject|' + $json.ID } ], [ { text: 'Open Review', url: $json.Draft_Video_URL } ]] } } }}",

@@ -122,9 +122,13 @@ def clean_caption(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
+def phase4_bot_token() -> str:
+    return os.getenv("TELEGRAM__PHASE4_BOT_TOKEN", "").strip()
+
+
 def safe_error_message(exc: Exception) -> str:
     message = str(exc)
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    bot_token = phase4_bot_token()
     if bot_token:
         message = message.replace(bot_token, "<telegram-bot-token>")
     return message[:320]
@@ -153,10 +157,10 @@ def find_publish_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def send_telegram_review(row: dict[str, Any]) -> dict[str, Any]:
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    bot_token = phase4_bot_token()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not bot_token or not chat_id:
-        return {"sent": False, "reason": "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing"}
+        return {"sent": False, "reason": "TELEGRAM__PHASE4_BOT_TOKEN or TELEGRAM_CHAT_ID is missing"}
 
     draft_url = str(row.get("Draft_Video_URL", "")).strip()
     caption = clean_caption(row.get("Caption", ""))
@@ -197,7 +201,7 @@ def send_telegram_review(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def answer_telegram_callback(callback: dict[str, Any], label: str) -> None:
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    bot_token = phase4_bot_token()
     if not bot_token:
         return
 

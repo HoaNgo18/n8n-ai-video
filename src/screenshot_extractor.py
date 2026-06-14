@@ -1325,14 +1325,14 @@ def choose_post_and_comments(
         key=lambda block: (
             0 if normalize_search_text(str((block.get("meta", {}) or {}).get("author_name") or "")) == post_author else 1,
             0 if len(re.findall(r"\d+(?:[.,]\d+)?K?|\d+", block.get("text", ""), re.IGNORECASE)) >= 2 else 1,
-            block.get("rect", {}).get("y", 99999),
+            rect_document_top(block.get("rect", {}) or {}),
             -block.get("rect", {}).get("height", 0),
         ),
     )
     post_block = post_candidates[0]
     post_rect = post_block.get("rect", {})
-    post_y = post_rect.get("y", 0)
-    post_bottom = post_y + post_rect.get("height", 0)
+    post_y = rect_document_top(post_rect)
+    post_bottom = rect_document_bottom(post_rect)
 
     continuation_blocks = []
     regular_comments = []
@@ -1348,7 +1348,7 @@ def choose_post_and_comments(
             continue
         if is_nested_pressable_inside(post_block, block):
             continue
-        if rect.get("y", 0) < post_bottom - 30:
+        if rect_document_top(rect) < post_bottom - 30:
             continue
         if rect.get("height", 0) > 360:
             continue
@@ -1361,10 +1361,10 @@ def choose_post_and_comments(
             continue
         regular_comments.append(block)
 
-    continuation_blocks.sort(key=lambda block: block.get("rect", {}).get("y", 99999))
+    continuation_blocks.sort(key=lambda block: rect_document_top(block.get("rect", {}) or {}))
     regular_comments.sort(
         key=lambda block: (
-            block.get("rect", {}).get("y", 99999),
+            rect_document_top(block.get("rect", {}) or {}),
             -int(block.get("meta", {}).get("engagement_score") or 0),
         )
     )

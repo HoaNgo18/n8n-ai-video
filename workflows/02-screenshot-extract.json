@@ -1,421 +1,534 @@
 {
-    "nodes":  [
-                  {
-                      "parameters":  {
-
-                                     },
-                      "type":  "n8n-nodes-base.manualTrigger",
-                      "typeVersion":  1,
-                      "position":  [
-                                       5200,
-                                       1024
-                                   ],
-                      "id":  "f5ad9910-97e4-494a-8a1b-c72a02dd24d5",
-                      "name":  "Manual Test Trigger"
-                  },
-                  {
-                      "parameters":  {
-                                         "authentication":  "serviceAccount",
-                                         "documentId":  {
-                                                            "__rl":  true,
-                                                            "value":  "={{ $env.GOOGLE_SHEET_ID }}",
-                                                            "mode":  "list",
-                                                            "cachedResultName":  "GOOGLE_SHEET_ID",
-                                                            "cachedResultUrl":  ""
-                                                        },
-                                         "sheetName":  {
-                                                           "__rl":  true,
-                                                           "value":  "Threads",
-                                                           "mode":  "name"
-                                                       },
-                                         "operation":  "read",
-                                         "range":  "Threads!A:F",
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "type":  "n8n-nodes-base.googleSheets",
-                      "typeVersion":  4.7,
-                      "position":  [
-                                       5424,
-                                       1024
-                                   ],
-                      "id":  "e67d5ea6-bfd2-447f-b393-0e0d592f8092",
-                      "name":  "Read Threads Sheet",
-                      "credentials":  {
-                                          "googleApi":  {
-                                                            "id":  "VEmpv0MmVvoaBa11",
-                                                            "name":  "Google Sheets account"
-                                                        }
-                                      }
-                  },
-                  {
-                      "parameters":  {
-                                         "jsCode":  "const pending = $input.all().filter(item =\u003e {\n  const status = String(item.json.Status || \u0027\u0027).trim().toLowerCase();\n  const hasRequiredFields = item.json.ID \u0026\u0026 item.json.Source_URL;\n  const alreadyExtracted = String(item.json.Screenshots || \u0027\u0027).trim() || String(item.json.Extracted_Content || \u0027\u0027).trim();\n  return status === \u0027pending\u0027 \u0026\u0026 hasRequiredFields \u0026\u0026 !alreadyExtracted;\n});\n\nreturn pending.slice(0, 1);"
-                                     },
-                      "type":  "n8n-nodes-base.code",
-                      "typeVersion":  2,
-                      "position":  [
-                                       5648,
-                                       1024
-                                   ],
-                      "id":  "2e25bfb0-13b7-4ea4-8ae4-21a832c1b45f",
-                      "name":  "Pick Pending Row"
-                  },
-                  {
-                      "parameters":  {
-                                         "url":  "http://host.docker.internal:8000/phase2/screenshot-extract",
-                                         "method":  "POST",
-                                         "sendBody":  true,
-                                         "specifyBody":  "json",
-                                         "jsonBody":  "={{ { id: $json.ID, url: $json.Source_URL } }}",
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "type":  "n8n-nodes-base.httpRequest",
-                      "typeVersion":  4.4,
-                      "position":  [
-                                       5872,
-                                       1024
-                                   ],
-                      "id":  "5a971910-e04c-4c0f-acc8-7024118db701",
-                      "name":  "Run Screenshot Extractor"
-                  },
-                  {
-                      "parameters":  {
-                                         "jsCode":  "const inputItems = $input.all();\nconst output = [];\nconst env = (typeof process !== \u0027undefined\u0027 \u0026\u0026 process.env) ? process.env : {};\nconst rewriteEnabled = [\u00271\u0027, \u0027true\u0027, \u0027yes\u0027].includes(String(env.SCRIPT_REWRITE_ENABLED || \u0027true\u0027).trim().toLowerCase());\nconst model = String(env.SCRIPT_REWRITE_MODEL || \u0027gemini-2.5-flash-lite\u0027).trim();\n\nfunction cleanText(value) {\n  return String(value || \u0027\u0027).replace(/\\s+/g, \u0027 \u0027).trim();\n}\n\nfunction sanitizeForSpeech(value) {\n  return cleanText(value)\n    .replace(/^Bai dang Threads nay dang gay chu y nhu sau:\\s*/i, \u0027\u0027)\n    .replace(/^Mo dau cau chuyen nhu sau:\\s*/i, \u0027\u0027)\n    .replace(/^Dien bien tiep theo la:\\s*/i, \u0027\u0027)\n    .replace(/^Sau do, nguoi viet ke tiep rang:\\s*/i, \u0027\u0027)\n    .replace(/^Chi tiet dang chu y o phan sau la:\\s*/i, \u0027\u0027)\n    .replace(/^Comment dau tien noi rang:\\s*/i, \u0027\u0027)\n    .replace(/^Mot y kien khac lai cho rang:\\s*/i, \u0027\u0027)\n    .replace(/^Con co nguoi bo sung them la:\\s*/i, \u0027\u0027)\n    .replace(/^Mot binh luan nua nhan manh rang:\\s*/i, \u0027\u0027)\n    .replace(/^Y kien cuoi cung cho thay:\\s*/i, \u0027\u0027)\n    .replace(/^(?:Pinned\\s+)?(?:@?[A-Za-z0-9_.]+(?:\\s+[A-Za-z0-9_.\u0026\u0027/-]+){0,8})\\s+\\d+\\s*[smhdw]\\b\\s*/i, \u0027\u0027)\n    .replace(/\\(?\\s*\\d+\\s*\\)?\\s*(?:\\/\\s*\\d+\\s*)?(?:\\d+(?:[.,]\\d+)?[KMkm]?\\s*){2,6}(?:to\\s+[A-Za-z0-9_.\\s-]+)?\\.{0,3}\\s*$/i, \u0027 \u0027)\n    .replace(/\\(?\\s*\\d+\\s*\\)?\\s*(?:\\/\\s*\\d+\\s*)?(?:to\\s+[A-Za-z0-9_.\\s-]+)?\\.{0,3}\\s*$/i, \u0027 \u0027)\n    .replace(/\\bto\\s+[A-Za-z0-9_.\\s-]+\\.{0,3}\\s*$/i, \u0027 \u0027)\n    .replace(/(^|\\s)@\\S+/g, \u0027 \u0027)\n    .replace(/\\b\\d+\\s*[smhdw]\\b/gi, \u0027 \u0027)\n    .replace(/[\\u{1F300}-\\u{1FAFF}]/gu, \u0027 \u0027)\n    .replace(/[#*_`~|^]+/g, \u0027 \u0027)\n    .replace(/[\\\\/]+/g, \u0027 \u0027)\n    .replace(/\\*{2,}/g, \u0027 \u0027)\n    .replace(/\\b(reply|like|share|repost|translate|view activity|top|pinned)\\b/gi, \u0027 \u0027)\n    .replace(/\\s{2,}/g, \u0027 \u0027)\n    .trim();\n}\n\nfunction limitText(value, maxLength) {\n  const text = cleanText(value);\n  if (text.length \u003c= maxLength) return text;\n  const shortened = text.slice(0, maxLength);\n  const lastBreak = Math.max(shortened.lastIndexOf(\u0027. \u0027), shortened.lastIndexOf(\u0027! \u0027), shortened.lastIndexOf(\u0027? \u0027), shortened.lastIndexOf(\u0027, \u0027), shortened.lastIndexOf(\u0027 \u0027));\n  return cleanText(shortened.slice(0, lastBreak \u003e 40 ? lastBreak : maxLength));\n}\n\nfunction dedupeTexts(values) {\n  const result = [];\n  const seen = new Set();\n  for (const value of values || []) {\n    const text = cleanText(value);\n    const key = text.toLowerCase().replace(/[^0-9a-z\\u00c0-\\u1ef9]+/g, \u0027\u0027);\n    if (!text || !key || seen.has(key)) continue;\n    seen.add(key);\n    result.push(text);\n  }\n  return result;\n}\n\nfunction normalizeTextArray(values, maxLength, maxItems) {\n  const items = Array.isArray(values) ? values : [];\n  const texts = items\n    .map((item) =\u003e limitText(sanitizeForSpeech(item \u0026\u0026 item.text), maxLength))\n    .filter((text) =\u003e text \u0026\u0026 text.replace(/\\s/g, \u0027\u0027).length \u003e= 12);\n  return dedupeTexts(texts).slice(0, maxItems);\n}\n\nfunction normalizeSegmentObjects(values, maxLength, maxItems, allowedTypes = []) {\n  const items = Array.isArray(values) ? values : [];\n  const result = [];\n  const seen = new Set();\n\n  for (const item of items) {\n    const type = cleanText(item \u0026\u0026 item.type).toLowerCase() || \u0027segment\u0027;\n    if (allowedTypes.length \u0026\u0026 !allowedTypes.includes(type)) continue;\n\n    const text = limitText(sanitizeForSpeech(item \u0026\u0026 item.text), maxLength);\n    const key = text.toLowerCase().replace(/[^0-9a-z\\u00c0-\\u1ef9]+/g, \u0027\u0027);\n    if (!text || !key || text.replace(/\\s/g, \u0027\u0027).length \u003c 12 || seen.has(key)) continue;\n\n    seen.add(key);\n    result.push({ type, text });\n    if (result.length \u003e= maxItems) break;\n  }\n\n  return result;\n}\n\nfunction splitStorySegments(post, continuations) {\n  const postParts = String(post || \u0027\u0027)\n    .split(/\\n{2,}/)\n    .map((part) =\u003e limitText(sanitizeForSpeech(part), 900))\n    .filter(Boolean);\n  const continuationParts = normalizeTextArray(continuations, 900, 12);\n  const combined = continuationParts.length ? [...postParts, ...continuationParts] : postParts;\n  return dedupeTexts(combined.filter(Boolean)).slice(0, 16);\n}\n\nfunction buildFallback(sourceSegments) {\n  const lines = dedupeTexts((sourceSegments || []).map((item) =\u003e limitText(sanitizeForSpeech(item), 900)).filter(Boolean));\n  return lines.join(\u0027\\n\u0027).slice(0, 8000);\n}\n\nfor (const item of inputItems) {\n  const source = item.json;\n  const extractedRaw = String(source.Extracted_Content || \u0027\u0027).trim();\n  let extracted = {};\n  try {\n    extracted = extractedRaw ? JSON.parse(extractedRaw) : {};\n  } catch (error) {\n    extracted = {};\n  }\n\n  const post = limitText(sanitizeForSpeech(extracted.post_text || \u0027\u0027), 8000);\n  const segmentObjects = normalizeSegmentObjects(extracted.segments, 900, 16);\n  const storySegments = segmentObjects.length\n    ? segmentObjects.filter((item) =\u003e item.type === \u0027post\u0027 || item.type === \u0027continuation\u0027).map((item) =\u003e item.text)\n    : splitStorySegments(post, extracted.continuations);\n  const rawComments = segmentObjects.length\n    ? segmentObjects.filter((item) =\u003e item.type === \u0027comment\u0027).map((item) =\u003e item.text)\n    : normalizeTextArray(extracted.comments, 320, 8);\n  const mode = cleanText(extracted.content_mode || \u0027\u0027) || (storySegments.length \u003e= 2 ? \u0027story\u0027 : (rawComments.length \u003e= 2 ? \u0027discussion\u0027 : \u0027general\u0027));\n  const comments = mode === \u0027story\u0027 ? rawComments.slice(0, 2) : rawComments;\n  const sourceSegments = mode === \u0027story\u0027\n    ? dedupeTexts([...storySegments, ...comments].filter(Boolean)).slice(0, 16)\n    : (segmentObjects.length\n      ? segmentObjects.map((item) =\u003e item.text)\n      : (storySegments.length ? dedupeTexts([...storySegments, ...comments].filter(Boolean)).slice(0, 16) : dedupeTexts([post, ...comments].filter(Boolean)).slice(0, 16)));\n  const rawScript = limitText(String(source.Narrator_Script || \u0027\u0027), 8000);\n  const fallbackScript = buildFallback(sourceSegments) || rawScript || post;\n  const note = cleanText(source.Note || \u0027\u0027);\n  const prompt = [\n    \u0027You are an expert short-form video script editor for Vietnamese TTS normalization.\u0027,\n    \u0027Your job is to minimally normalize the source text so a Vietnamese TTS voice can read it correctly and naturally, while preserving the original meaning, order, and segment structure.\u0027,\n    \u0027The input may include POST_TONG_HOP, STORY_SEGMENTS, SOURCE_SEGMENTS, and COMMENTS. STORY_SEGMENTS are continuation parts of the same story thread; COMMENTS are outside reactions or opinions.\u0027,\n    \u0027Preserve chronology strictly. Keep one output line per source segment whenever possible so narration timing can stay aligned with screenshots. Keep line breaks between segments unless the source is obviously fragmented.\u0027,\n    \u0027Allowed edits only: fix obvious typos, restore Vietnamese diacritics when clear, expand common abbreviations or shorthand so TTS can read them correctly, and remove noisy UI fragments.\u0027,\n    \u0027Expand Vietnamese teen/slang shorthand when clear: t = tao, m = may, b?n t = bon tao, mng = moi nguoi, k/ko/kh = khong, r = roi, nma = nhung ma, ny = nguoi yeu, dt/dt = dien thoai, dh = du hoc or dai hoc by context.\u0027,\n    \u0027Pronoun style is mandatory: when the source uses t or b?n t, write tao and b?n tao. Do not rewrite tao into to, toi, minh, to, t?, b?n t?, ch�ng t�i, or ch�ng t?.\u0027,\n    \u0027Examples of acceptable normalization when the meaning is clear: ck to chong, vk to vo, ko or k to khong, mn or mng to moi nguoi, mik or mk to minh, ny to nguoi yeu, dc or dc to duoc.\u0027,\n    \u0027Remove Threads UI/metric fragments such as like/comment/share counts, page markers, author context like to username, and navigation comments like de nghi chu tus de so len truoc.\u0027,\n    \u0027Do not shorten the content unless it is clearly duplicated or broken UI noise. If the source is long, keep the full meaningful content.\u0027,\n    \u0027Do not add framing phrases, filler connectors, commentary, summarizer language, dramatic transitions, conclusions, or new information that is not present in the source.\u0027,\n    \u0027If a slang term is ambiguous, keep it close to the original instead of guessing.\u0027,\n    \u0027If COMMENTS exist, use them only when they add meaningful context or reaction. If there are no useful comments, do not invent any.\u0027,\n    \u0027The final script must be written in natural Vietnamese, with short complete sentences, smooth flow, no bullet points, no markdown, and no ending question like Ban nghi sao.\u0027,\n    \u0027Return valid JSON only with exactly this schema: {\"script\":\"...\"}.\u0027,\n  ].join(\u0027 \u0027);\n\n  output.push({\n    json: {\n      ...source,\n      _rewrite: {\n        enabled: rewriteEnabled,\n        prompt,\n        post,\n        story_segments: storySegments,\n        source_segments: sourceSegments,\n        comments,\n        fallback_script: fallbackScript,\n        prior_note: note,\n        model,\n        mode,\n      },\n    },\n  });\n}\n\nreturn output;"
-                                     },
-                      "type":  "n8n-nodes-base.code",
-                      "typeVersion":  2,
-                      "position":  [
-                                       6064,
-                                       1024
-                                   ],
-                      "id":  "b370ac25-48d6-41cc-a74b-1c0c200eb75a",
-                      "name":  "Prepare Rewrite Payload"
-                  },
-                  {
-                      "parameters":  {
-                                         "resource":  "text",
-                                         "operation":  "message",
-                                         "modelId":  {
-                                                         "__rl":  true,
-                                                         "mode":  "id",
-                                                         "value":  "={{ $json._rewrite.model ? \u0027models/\u0027 + $json._rewrite.model.replace(/^models\\//, \u0027\u0027) : \u0027models/gemini-2.5-flash-lite\u0027 }}"
-                                                     },
-                                         "messages":  {
-                                                          "values":  [
-                                                                         {
-                                                                             "content":  "={{ $json._rewrite.prompt + \u0027\\n\\nPOST_TONG_HOP:\\n\u0027 + ($json._rewrite.post || \u0027(none)\u0027) + \u0027\\n\\nSTORY_SEGMENTS:\\n- \u0027 + ((($json._rewrite.story_segments || []).length ? $json._rewrite.story_segments : [\u0027(none)\u0027]).join(\u0027\\n- \u0027)) + \u0027\\n\\nSOURCE_SEGMENTS:\\n- \u0027 + ((($json._rewrite.source_segments || []).length ? $json._rewrite.source_segments : [\u0027(none)\u0027]).join(\u0027\\n- \u0027)) + \u0027\\n\\nCOMMENTS:\\n- \u0027 + ((($json._rewrite.comments || []).length ? $json._rewrite.comments : [\u0027(none)\u0027]).join(\u0027\\n- \u0027)) + \u0027\\n\\nCHE_DO_NOI_DUNG: \u0027 + ($json._rewrite.mode || \u0027general\u0027) + \u0027\\n\\nFALLBACK_SCRIPT_THAM_KHAO:\\n\u0027 + ($json._rewrite.fallback_script || \u0027\u0027) + \u0027\\n\\nNhac lai: chi tra ve JSON hop le voi mot truong duy nhat la script.\u0027 }}",
-                                                                             "role":  "user"
-                                                                         }
-                                                                     ]
-                                                      },
-                                         "simplify":  false,
-                                         "jsonOutput":  true,
-                                         "builtInTools":  {
-
-                                                          },
-                                         "options":  {
-                                                         "maxOutputTokens":  3000,
-                                                         "temperature":  0.3,
-                                                         "topP":  0.9
-                                                     }
-                                     },
-                      "type":  "@n8n/n8n-nodes-langchain.googleGemini",
-                      "typeVersion":  1.1,
-                      "position":  [
-                                       6288,
-                                       1024
-                                   ],
-                      "id":  "ea788479-bdd1-4442-9325-4ed253c073a0",
-                      "name":  "Gemini Rewrite Request",
-                      "credentials":  {
-                                          "googlePalmApi":  {
-                                                                "id":  "G4dMTEqzuDjrQ6aY",
-                                                                "name":  "Google Gemini(PaLM) Api account"
-                                                            }
-                                      }
-                  },
-                  {
-                      "parameters":  {
-                                         "mode":  "combine",
-                                         "combineBy":  "combineByPosition",
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "type":  "n8n-nodes-base.merge",
-                      "typeVersion":  3,
-                      "position":  [
-                                       6528,
-                                       1280
-                                   ],
-                      "id":  "5af19816-e40b-4d1a-8eee-7505abba0b8e",
-                      "name":  "Merge Rewrite Result"
-                  },
-                  {
-                      "parameters":  {
-                                         "jsCode":  "const output = [];\n\nfunction cleanText(value) {\n  return String(value || \u0027\u0027).replace(/\\s+/g, \u0027 \u0027).trim();\n}\n\nfunction cleanLines(value) {\n  return String(value || \u0027\u0027)\n    .replace(/\\r/g, \u0027\u0027)\n    .split(\u0027\\n\u0027)\n    .map((line) =\u003e line.replace(/\\s+/g, \u0027 \u0027).trim())\n    .filter(Boolean)\n    .join(\u0027\\n\u0027);\n}\n\nfunction normalizePronouns(value) {\n  return String(value || \u0027\u0027)\n    .replace(/\\bb?n\\s+t?\\b/gi, \u0027b?n tao\u0027)\n    .replace(/\\bt?i\\s+t?\\b/gi, \u0027t?i tao\u0027)\n    .replace(/\\bt?\\b/gi, \u0027tao\u0027);\n}\n\nfunction normalizeScript(value) {\n  return cleanLines(normalizePronouns(String(value || \u0027\u0027)))\n    .replace(/^```(?:json)?\\s*/i, \u0027\u0027)\n    .replace(/```$/i, \u0027\u0027)\n    .replace(/^[\u0027\\\"]+|[\u0027\\\"]+$/g, \u0027\u0027)\n    .replace(/^script\\s*:\\s*/i, \u0027\u0027)\n    .replace(/^[\\-*•]+\\s*/gm, \u0027\u0027)\n    .trim();\n}\n\nfunction parseJsonCandidate(text) {\n  const cleaned = cleanText(text);\n  if (!cleaned) return \u0027\u0027;\n\n  const fencedMatch = cleaned.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  const jsonSource = fencedMatch ? fencedMatch[1] : cleaned;\n  const candidates = [jsonSource, ...(jsonSource.match(/\\{[\\s\\S]*?\\}/g) || [])];\n\n  for (const candidate of candidates) {\n    try {\n      const parsed = JSON.parse(candidate);\n      if (typeof parsed === \u0027string\u0027) return normalizeScript(parsed);\n      if (parsed \u0026\u0026 typeof parsed.script === \u0027string\u0027) return normalizeScript(parsed.script);\n      if (parsed \u0026\u0026 typeof parsed.narrator_script === \u0027string\u0027) return normalizeScript(parsed.narrator_script);\n    } catch (error) {\n      continue;\n    }\n  }\n\n  return \u0027\u0027;\n}\n\nfunction extractTextDeep(value, bucket = []) {\n  if (typeof value === \u0027string\u0027) {\n    const cleaned = cleanText(value);\n    if (cleaned) bucket.push(cleaned);\n    return bucket;\n  }\n\n  if (!value || typeof value !== \u0027object\u0027) return bucket;\n\n  if (Array.isArray(value)) {\n    value.forEach(entry =\u003e extractTextDeep(entry, bucket));\n    return bucket;\n  }\n\n  const preferredKeys = [\u0027script\u0027, \u0027narrator_script\u0027, \u0027text\u0027, \u0027output\u0027, \u0027generatedText\u0027, \u0027content\u0027, \u0027message\u0027];\n  preferredKeys.forEach(key =\u003e {\n    if (typeof value[key] === \u0027string\u0027) {\n      const cleaned = cleanText(value[key]);\n      if (cleaned) bucket.push(cleaned);\n    }\n  });\n\n  Object.values(value).forEach(entry =\u003e {\n    if (entry \u0026\u0026 typeof entry === \u0027object\u0027) {\n      extractTextDeep(entry, bucket);\n    }\n  });\n\n  return bucket;\n}\n\nfunction extractGeminiScript(data) {\n  if (!data || typeof data !== \u0027object\u0027) return \u0027\u0027;\n\n  const possibleJsonSources = [\n    data.script,\n    data.text,\n    data.output,\n    data.generatedText,\n    typeof data.response === \u0027string\u0027 ? data.response : \u0027\u0027,\n    typeof data.content === \u0027string\u0027 ? data.content : \u0027\u0027,\n    typeof data.message === \u0027string\u0027 ? data.message : \u0027\u0027,\n  ].filter(Boolean);\n\n  for (const source of possibleJsonSources) {\n    const parsed = parseJsonCandidate(source);\n    if (parsed) return parsed;\n  }\n\n  const deepTexts = extractTextDeep(data, []);\n  for (const text of deepTexts) {\n    const parsed = parseJsonCandidate(text);\n    if (parsed) return parsed;\n  }\n\n  const combined = normalizeScript(deepTexts.join(\u0027\\n\u0027));\n  return combined;\n}\n\nfor (const item of $input.all()) {\n  const rewrite = item.json._rewrite || {};\n  const note = cleanText(rewrite.prior_note || item.json.Note || \u0027\u0027);\n  const disabled = !rewrite.enabled;\n  const candidate = (((item.json.candidates || [])[0]) || {});\n  const finishReason = cleanText(candidate.finishReason || item.json.finishReason || \u0027\u0027);\n  const script = extractGeminiScript(item.json);\n  const truncated = finishReason.toUpperCase() === \u0027MAX_TOKENS\u0027;\n  const tooShort = script \u0026\u0026 script.length \u003c 80;\n  const invalidObjectLeak = /^\\[object Object\\]/i.test(script);\n\n  if (disabled) {\n    item.json.Narrator_Script = String(rewrite.fallback_script || \u0027\u0027).slice(0, 8000);\n    item.json.Note = cleanText(`${note} | AI rewrite skipped: disabled by SCRIPT_REWRITE_ENABLED`);\n  } else if (script \u0026\u0026 !truncated \u0026\u0026 !tooShort \u0026\u0026 !invalidObjectLeak) {\n    item.json.Narrator_Script = script.slice(0, 8000);\n    item.json.Note = cleanText(`${note} | AI rewrite ready gemini=${rewrite.model}`);\n  } else {\n    const reason = truncated\n      ? \u0027MAX_TOKENS\u0027\n      : invalidObjectLeak\n        ? \u0027invalid Gemini object output\u0027\n        : (tooShort ? \u0027short Gemini response\u0027 : \u0027empty Gemini response\u0027);\n    item.json.Narrator_Script = String(rewrite.fallback_script || script || \u0027\u0027).slice(0, 8000);\n    item.json.Note = cleanText(`${note} | AI rewrite fallback: ${reason} gemini=${rewrite.model}`);\n  }\n\n  delete item.json._rewrite;\n  output.push(item);\n}\n\nreturn output;"
-                                     },
-                      "type":  "n8n-nodes-base.code",
-                      "typeVersion":  2,
-                      "position":  [
-                                       6752,
-                                       1280
-                                   ],
-                      "id":  "224b9767-94dd-4bdf-a3ed-8a5feb3cb9fb",
-                      "name":  "Finalize Rewrite Script"
-                  },
-                  {
-                      "parameters":  {
-                                         "authentication":  "serviceAccount",
-                                         "operation":  "appendOrUpdate",
-                                         "documentId":  {
-                                                            "__rl":  true,
-                                                            "value":  "={{ $env.GOOGLE_SHEET_ID }}",
-                                                            "mode":  "list",
-                                                            "cachedResultName":  "GOOGLE_SHEET_ID",
-                                                            "cachedResultUrl":  ""
-                                                        },
-                                         "sheetName":  {
-                                                           "__rl":  true,
-                                                           "value":  "Threads",
-                                                           "mode":  "name"
-                                                       },
-                                         "columns":  {
-                                                         "mappingMode":  "defineBelow",
-                                                         "value":  {
-                                                                       "ID":  "={{ $json.ID }}",
-                                                                       "Screenshots":  "={{ $json.Screenshots }}",
-                                                                       "Extracted_Content":  "={{ $json.Extracted_Content }}",
-                                                                       "Narrator_Script":  "={{ $json.Narrator_Script }}",
-                                                                       "Status":  "={{ $json.Status }}",
-                                                                       "Note":  "={{ $json.Note }}"
-                                                                   },
-                                                         "matchingColumns":  [
-                                                                                 "ID"
-                                                                             ],
-                                                         "schema":  [
-                                                                        {
-                                                                            "id":  "ID",
-                                                                            "displayName":  "ID",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Source_URL",
-                                                                            "displayName":  "Source_URL",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true,
-                                                                            "removed":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Collected_At",
-                                                                            "displayName":  "Collected_At",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true,
-                                                                            "removed":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Status",
-                                                                            "displayName":  "Status",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Screenshots",
-                                                                            "displayName":  "Screenshots",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Extracted_Content",
-                                                                            "displayName":  "Extracted_Content",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Narrator_Script",
-                                                                            "displayName":  "Narrator_Script",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Video_Path",
-                                                                            "displayName":  "Video_Path",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true,
-                                                                            "removed":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Published_URL",
-                                                                            "displayName":  "Published_URL",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true,
-                                                                            "removed":  true
-                                                                        },
-                                                                        {
-                                                                            "id":  "Note",
-                                                                            "displayName":  "Note",
-                                                                            "required":  false,
-                                                                            "defaultMatch":  false,
-                                                                            "display":  true,
-                                                                            "type":  "string",
-                                                                            "canBeUsedToMatch":  true
-                                                                        }
-                                                                    ],
-                                                         "attemptToConvertTypes":  false,
-                                                         "convertFieldsToString":  false
-                                                     },
-                                         "options":  {
-
-                                                     }
-                                     },
-                      "type":  "n8n-nodes-base.googleSheets",
-                      "typeVersion":  4.7,
-                      "position":  [
-                                       6976,
-                                       1280
-                                   ],
-                      "id":  "5ee74da9-f543-4595-bc42-ce08ae465ff0",
-                      "name":  "Update Sheet Row",
-                      "credentials":  {
-                                          "googleApi":  {
-                                                            "id":  "VEmpv0MmVvoaBa11",
-                                                            "name":  "Google Sheets account"
-                                                        }
-                                      }
-                  }
-              ],
-    "connections":  {
-                        "Manual Test Trigger":  {
-                                                    "main":  [
-                                                                 [
-                                                                     {
-                                                                         "node":  "Read Threads Sheet",
-                                                                         "type":  "main",
-                                                                         "index":  0
-                                                                     }
-                                                                 ]
-                                                             ]
-                                                },
-                        "Read Threads Sheet":  {
-                                                   "main":  [
-                                                                [
-                                                                    {
-                                                                        "node":  "Pick Pending Row",
-                                                                        "type":  "main",
-                                                                        "index":  0
-                                                                    }
-                                                                ]
-                                                            ]
-                                               },
-                        "Pick Pending Row":  {
-                                                 "main":  [
-                                                              [
-                                                                  {
-                                                                      "node":  "Run Screenshot Extractor",
-                                                                      "type":  "main",
-                                                                      "index":  0
-                                                                  }
-                                                              ]
-                                                          ]
-                                             },
-                        "Run Screenshot Extractor":  {
-                                                         "main":  [
-                                                                      [
-                                                                          {
-                                                                              "node":  "Prepare Rewrite Payload",
-                                                                              "type":  "main",
-                                                                              "index":  0
-                                                                          }
-                                                                      ]
-                                                                  ]
-                                                     },
-                        "Prepare Rewrite Payload":  {
-                                                        "main":  [
-                                                                     [
-                                                                         {
-                                                                             "node":  "Merge Rewrite Result",
-                                                                             "type":  "main",
-                                                                             "index":  1
-                                                                         },
-                                                                         {
-                                                                             "node":  "Gemini Rewrite Request",
-                                                                             "type":  "main",
-                                                                             "index":  0
-                                                                         }
-                                                                     ]
-                                                                 ]
-                                                    },
-                        "Gemini Rewrite Request":  {
-                                                       "main":  [
-                                                                    [
-                                                                        {
-                                                                            "node":  "Merge Rewrite Result",
-                                                                            "type":  "main",
-                                                                            "index":  0
-                                                                        }
-                                                                    ]
-                                                                ]
-                                                   },
-                        "Merge Rewrite Result":  {
-                                                     "main":  [
-                                                                  [
-                                                                      {
-                                                                          "node":  "Finalize Rewrite Script",
-                                                                          "type":  "main",
-                                                                          "index":  0
-                                                                      }
-                                                                  ]
-                                                              ]
-                                                 },
-                        "Finalize Rewrite Script":  {
-                                                        "main":  [
-                                                                     [
-                                                                         {
-                                                                             "node":  "Update Sheet Row",
-                                                                             "type":  "main",
-                                                                             "index":  0
-                                                                         }
-                                                                     ]
-                                                                 ]
-                                                    }
-                    },
-    "pinData":  {
-
-                },
-    "meta":  {
-                 "templateCredsSetupCompleted":  true,
-                 "instanceId":  "6c30afaa852f74e02f831710b585be20efcca194df2402dde964823fcb63a143"
-             }
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        4176,
+        2064
+      ],
+      "id": "83a2b171-5e51-4838-8cf6-11238b2867f2",
+      "name": "Manual Test Trigger"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "phase2-start",
+        "options": {
+          "responseData": "{\"ok\":true}"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        4176,
+        2256
+      ],
+      "id": "d2e706df-5fcc-4ddf-93b9-fa80e9baa9b4",
+      "name": "Phase 2 Start Webhook",
+      "webhookId": "phase2-start"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        4400,
+        2064
+      ],
+      "id": "48f1b1b9-b39c-4636-84ae-c3b524e8870d",
+      "name": "Read Threads Sheet",
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function getWebhookPayload() {\n  try {\n    const webhookItem = $('Phase 2 Start Webhook').first();\n    return webhookItem.json.body || webhookItem.json || {};\n  } catch (error) {\n    return {};\n  }\n}\n\nconst payload = getWebhookPayload();\nconst targetId = String(payload.id || payload.ID || '').trim();\nconst targetUrl = String(payload.source_url || payload.Source_URL || payload.url || '').trim();\nconst targetStatus = String(payload.status || payload.Status || '').trim().toLowerCase();\nconst targetScreenshots = String(payload.screenshots || payload.Screenshots || '').trim();\nconst targetExtracted = String(payload.extracted_content || payload.Extracted_Content || '').trim();\n\nif (targetId && targetUrl && targetStatus === 'pending' && !targetScreenshots && !targetExtracted) {\n  return [{\n    json: {\n      ID: targetId,\n      Source_URL: targetUrl,\n      Source: payload.source || payload.Source || '',\n      Collected_At: payload.collected_at || payload.Collected_At || '',\n      Status: payload.Status || payload.status || 'Pending',\n      Note: payload.Note || payload.note || '',\n    },\n  }];\n}\n\nconst pending = $input.all().filter(item => {\n  const id = String(item.json.ID || '').trim();\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasRequiredFields = item.json.ID && item.json.Source_URL;\n  const alreadyExtracted = String(item.json.Screenshots || '').trim() || String(item.json.Extracted_Content || '').trim();\n  if (targetId && id !== targetId) return false;\n  return status === 'pending' && hasRequiredFields && !alreadyExtracted;\n});\n\nreturn pending.slice(0, 1);"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4624,
+        2064
+      ],
+      "id": "d6e6542e-1743-44ef-add4-990a130764c3",
+      "name": "Pick Pending Row"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/phase2/screenshot-extract",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { id: $json.ID, url: $json.Source_URL } }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4848,
+        2064
+      ],
+      "id": "0017a8dd-d30a-43af-a713-9e860444a214",
+      "name": "Run Screenshot Extractor"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputItems = $input.all();\nconst output = [];\nconst env = (typeof process !== 'undefined' && process.env) ? process.env : {};\nconst rewriteEnabled = ['1', 'true', 'yes'].includes(String(env.SCRIPT_REWRITE_ENABLED || 'true').trim().toLowerCase());\nconst model = String(env.SCRIPT_REWRITE_MODEL || 'gemini-2.5-flash-lite').trim();\n\nfunction cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction sanitizeForSpeech(value) {\n  return cleanText(value)\n    .replace(/^Bai dang Threads nay dang gay chu y nhu sau:\\s*/i, '')\n    .replace(/^Mo dau cau chuyen nhu sau:\\s*/i, '')\n    .replace(/^Dien bien tiep theo la:\\s*/i, '')\n    .replace(/^Sau do, nguoi viet ke tiep rang:\\s*/i, '')\n    .replace(/^Chi tiet dang chu y o phan sau la:\\s*/i, '')\n    .replace(/^Comment dau tien noi rang:\\s*/i, '')\n    .replace(/^Mot y kien khac lai cho rang:\\s*/i, '')\n    .replace(/^Con co nguoi bo sung them la:\\s*/i, '')\n    .replace(/^Mot binh luan nua nhan manh rang:\\s*/i, '')\n    .replace(/^Y kien cuoi cung cho thay:\\s*/i, '')\n    .replace(/^(?:Pinned\\s+)?(?:@?[A-Za-z0-9_.]+(?:\\s+[A-Za-z0-9_.&'/-]+){0,8})\\s+\\d+\\s*[smhdw]\\b\\s*/i, '')\n    .replace(/\\(?\\s*\\d+\\s*\\)?\\s*(?:\\/\\s*\\d+\\s*)?(?:\\d+(?:[.,]\\d+)?[KMkm]?\\s*){2,6}(?:to\\s+[A-Za-z0-9_.\\s-]+)?\\.{0,3}\\s*$/i, ' ')\n    .replace(/\\(?\\s*\\d+\\s*\\)?\\s*(?:\\/\\s*\\d+\\s*)?(?:to\\s+[A-Za-z0-9_.\\s-]+)?\\.{0,3}\\s*$/i, ' ')\n    .replace(/\\bto\\s+[A-Za-z0-9_.\\s-]+\\.{0,3}\\s*$/i, ' ')\n    .replace(/(^|\\s)@\\S+/g, ' ')\n    .replace(/\\b\\d+\\s*[smhdw]\\b/gi, ' ')\n    .replace(/[\\u{1F300}-\\u{1FAFF}]/gu, ' ')\n    .replace(/[#*_`~|^]+/g, ' ')\n    .replace(/[\\\\/]+/g, ' ')\n    .replace(/\\*{2,}/g, ' ')\n    .replace(/\\b(reply|like|share|repost|translate|view activity|top|pinned)\\b/gi, ' ')\n    .replace(/\\s{2,}/g, ' ')\n    .trim();\n}\n\nfunction limitText(value, maxLength) {\n  const text = cleanText(value);\n  if (text.length <= maxLength) return text;\n  const shortened = text.slice(0, maxLength);\n  const lastBreak = Math.max(shortened.lastIndexOf('. '), shortened.lastIndexOf('! '), shortened.lastIndexOf('? '), shortened.lastIndexOf(', '), shortened.lastIndexOf(' '));\n  return cleanText(shortened.slice(0, lastBreak > 40 ? lastBreak : maxLength));\n}\n\nfunction dedupeTexts(values) {\n  const result = [];\n  const seen = new Set();\n  for (const value of values || []) {\n    const text = cleanText(value);\n    const key = text.toLowerCase().replace(/[^0-9a-z\\u00c0-\\u1ef9]+/g, '');\n    if (!text || !key || seen.has(key)) continue;\n    seen.add(key);\n    result.push(text);\n  }\n  return result;\n}\n\nfunction normalizeTextArray(values, maxLength, maxItems) {\n  const items = Array.isArray(values) ? values : [];\n  const texts = items\n    .map((item) => limitText(sanitizeForSpeech(item && item.text), maxLength))\n    .filter((text) => text && text.replace(/\\s/g, '').length >= 12);\n  return dedupeTexts(texts).slice(0, maxItems);\n}\n\nfunction normalizeSegmentObjects(values, maxLength, maxItems, allowedTypes = []) {\n  const items = Array.isArray(values) ? values : [];\n  const result = [];\n  const seen = new Set();\n\n  for (const item of items) {\n    const type = cleanText(item && item.type).toLowerCase() || 'segment';\n    if (allowedTypes.length && !allowedTypes.includes(type)) continue;\n\n    const text = limitText(sanitizeForSpeech(item && item.text), maxLength);\n    const key = text.toLowerCase().replace(/[^0-9a-z\\u00c0-\\u1ef9]+/g, '');\n    if (!text || !key || text.replace(/\\s/g, '').length < 12 || seen.has(key)) continue;\n\n    seen.add(key);\n    result.push({ type, text });\n    if (result.length >= maxItems) break;\n  }\n\n  return result;\n}\n\nfunction splitStorySegments(post, continuations) {\n  const postParts = String(post || '')\n    .split(/\\n{2,}/)\n    .map((part) => limitText(sanitizeForSpeech(part), 900))\n    .filter(Boolean);\n  const continuationParts = normalizeTextArray(continuations, 900, 12);\n  const combined = continuationParts.length ? [...postParts, ...continuationParts] : postParts;\n  return dedupeTexts(combined.filter(Boolean)).slice(0, 16);\n}\n\nfunction buildFallback(sourceSegments) {\n  const lines = dedupeTexts((sourceSegments || []).map((item) => limitText(sanitizeForSpeech(item), 900)).filter(Boolean));\n  return lines.join('\\n').slice(0, 8000);\n}\n\nfor (const item of inputItems) {\n  const source = item.json;\n  const extractedRaw = String(source.Extracted_Content || '').trim();\n  let extracted = {};\n  try {\n    extracted = extractedRaw ? JSON.parse(extractedRaw) : {};\n  } catch (error) {\n    extracted = {};\n  }\n\n  const post = limitText(sanitizeForSpeech(extracted.post_text || ''), 8000);\n  const segmentObjects = normalizeSegmentObjects(extracted.segments, 900, 16);\n  const storySegments = segmentObjects.length\n    ? segmentObjects.filter((item) => item.type === 'post' || item.type === 'continuation').map((item) => item.text)\n    : splitStorySegments(post, extracted.continuations);\n  const rawComments = segmentObjects.length\n    ? segmentObjects.filter((item) => item.type === 'comment').map((item) => item.text)\n    : normalizeTextArray(extracted.comments, 320, 8);\n  const mode = cleanText(extracted.content_mode || '') || (storySegments.length >= 2 ? 'story' : (rawComments.length >= 2 ? 'discussion' : 'general'));\n  const comments = mode === 'story' ? rawComments.slice(0, 2) : rawComments;\n  const sourceSegments = mode === 'story'\n    ? dedupeTexts([...storySegments, ...comments].filter(Boolean)).slice(0, 16)\n    : (segmentObjects.length\n      ? segmentObjects.map((item) => item.text)\n      : (storySegments.length ? dedupeTexts([...storySegments, ...comments].filter(Boolean)).slice(0, 16) : dedupeTexts([post, ...comments].filter(Boolean)).slice(0, 16)));\n  const rawScript = limitText(String(source.Narrator_Script || ''), 8000);\n  const fallbackScript = buildFallback(sourceSegments) || rawScript || post;\n  const note = cleanText(source.Note || '');\n  const prompt = [\n    'You are an expert short-form video script editor for Vietnamese TTS normalization.',\n    'Your job is to minimally normalize the source text so a Vietnamese TTS voice can read it correctly and naturally, while preserving the original meaning, order, and segment structure.',\n    'The input may include POST_TONG_HOP, STORY_SEGMENTS, SOURCE_SEGMENTS, and COMMENTS. STORY_SEGMENTS are continuation parts of the same story thread; COMMENTS are outside reactions or opinions.',\n    'Preserve chronology strictly. Keep one output line per source segment whenever possible so narration timing can stay aligned with screenshots. Keep line breaks between segments unless the source is obviously fragmented.',\n    'Allowed edits only: fix obvious typos, restore Vietnamese diacritics when clear, expand common abbreviations or shorthand so TTS can read them correctly, and remove noisy UI fragments.',\n    'Expand Vietnamese teen/slang shorthand when clear: t = tao, m = may, b?n t = bon tao, mng = moi nguoi, k/ko/kh = khong, r = roi, nma = nhung ma, ny = nguoi yeu, dt/dt = dien thoai, dh = du hoc or dai hoc by context.',\n    'Pronoun style is mandatory: when the source uses t or b?n t, write tao and b?n tao. Do not rewrite tao into to, toi, minh, to, t?, b?n t?, chúng tôi, or chúng t?.',\n    'Examples of acceptable normalization when the meaning is clear: ck to chong, vk to vo, ko or k to khong, mn or mng to moi nguoi, mik or mk to minh, ny to nguoi yeu, dc or dc to duoc.',\n    'Remove Threads UI/metric fragments such as like/comment/share counts, page markers, author context like to username, and navigation comments like de nghi chu tus de so len truoc.',\n    'Do not shorten the content unless it is clearly duplicated or broken UI noise. If the source is long, keep the full meaningful content.',\n    'Do not add framing phrases, filler connectors, commentary, summarizer language, dramatic transitions, conclusions, or new information that is not present in the source.',\n    'If a slang term is ambiguous, keep it close to the original instead of guessing.',\n    'If COMMENTS exist, use them only when they add meaningful context or reaction. If there are no useful comments, do not invent any.',\n    'The final script must be written in natural Vietnamese, with short complete sentences, smooth flow, no bullet points, no markdown, and no ending question like Ban nghi sao.',\n    'Return valid JSON only with exactly this schema: {\"script\":\"...\"}.',\n  ].join(' ');\n\n  output.push({\n    json: {\n      ...source,\n      _rewrite: {\n        enabled: rewriteEnabled,\n        prompt,\n        post,\n        story_segments: storySegments,\n        source_segments: sourceSegments,\n        comments,\n        fallback_script: fallbackScript,\n        prior_note: note,\n        model,\n        mode,\n      },\n    },\n  });\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        2064
+      ],
+      "id": "c1064abd-2ec2-4fb4-bbbf-2e8d0920c842",
+      "name": "Prepare Rewrite Payload"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json._rewrite.model ? 'models/' + $json._rewrite.model.replace(/^models\\//, '') : 'models/gemini-2.5-flash-lite' }}"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $json._rewrite.prompt + '\\n\\nPOST_TONG_HOP:\\n' + ($json._rewrite.post || '(none)') + '\\n\\nSTORY_SEGMENTS:\\n- ' + ((($json._rewrite.story_segments || []).length ? $json._rewrite.story_segments : ['(none)']).join('\\n- ')) + '\\n\\nSOURCE_SEGMENTS:\\n- ' + ((($json._rewrite.source_segments || []).length ? $json._rewrite.source_segments : ['(none)']).join('\\n- ')) + '\\n\\nCOMMENTS:\\n- ' + ((($json._rewrite.comments || []).length ? $json._rewrite.comments : ['(none)']).join('\\n- ')) + '\\n\\nCHE_DO_NOI_DUNG: ' + ($json._rewrite.mode || 'general') + '\\n\\nFALLBACK_SCRIPT_THAM_KHAO:\\n' + ($json._rewrite.fallback_script || '') + '\\n\\nNhac lai: chi tra ve JSON hop le voi mot truong duy nhat la script.' }}"
+            }
+          ]
+        },
+        "simplify": false,
+        "jsonOutput": true,
+        "builtInTools": {},
+        "options": {
+          "maxOutputTokens": 3000,
+          "temperature": 0.3,
+          "topP": 0.9
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        5264,
+        2064
+      ],
+      "id": "037c8f7f-bf12-421b-9a06-e64725ddea0d",
+      "name": "Gemini Rewrite Request",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "EFiNS8DZN9NwjInq",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        5504,
+        2320
+      ],
+      "id": "01611054-6c4f-450d-bcbd-33a3741f1840",
+      "name": "Merge Rewrite Result"
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = [];\n\nfunction cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction cleanLines(value) {\n  return String(value || '')\n    .replace(/\\r/g, '')\n    .split('\\n')\n    .map((line) => line.replace(/\\s+/g, ' ').trim())\n    .filter(Boolean)\n    .join('\\n');\n}\n\nfunction replaceStandaloneToken(value, token, replacement) {\n  const escaped = token.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  const pattern = new RegExp(`(^|[\\\\s\\\\\"'“”‘’()\\\\[\\\\]{}.,!?;:+\\\\-])${escaped}(?=$|[\\\\s\\\\\"'“”‘’()\\\\[\\\\]{}.,!?;:+\\\\-])`, 'gi');\n  return value.replace(pattern, (_, prefix) => `${prefix}${replacement}`);\n}\n\nfunction normalizePronouns(value) {\n  let text = String(value || '');\n  text = replaceStandaloneToken(text, 't', 'tao');\n  text = replaceStandaloneToken(text, 'mk', 'minh');\n  text = replaceStandaloneToken(text, 'mik', 'minh');\n  text = replaceStandaloneToken(text, 'ny', 'nguoi yeu');\n  text = replaceStandaloneToken(text, 'ko', 'khong');\n  text = replaceStandaloneToken(text, 'k', 'khong');\n  return text;\n}\n\nfunction normalizeScript(value) {\n  return cleanLines(normalizePronouns(String(value || '')))\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/```$/i, '')\n    .replace(/^['\\\"]+|['\\\"]+$/g, '')\n    .replace(/^script\\s*:\\s*/i, '')\n    .replace(/^[\\-*â€¢]+\\s*/gm, '')\n    .trim();\n}\n\nfunction parseJsonCandidate(text) {\n  const cleaned = cleanText(text);\n  if (!cleaned) return '';\n\n  const fencedMatch = cleaned.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  const jsonSource = fencedMatch ? fencedMatch[1] : cleaned;\n  const candidates = [jsonSource, ...(jsonSource.match(/\\{[\\s\\S]*?\\}/g) || [])];\n\n  for (const candidate of candidates) {\n    try {\n      const parsed = JSON.parse(candidate);\n      if (parsed && typeof parsed.script === 'string') return normalizeScript(parsed.script);\n      if (parsed && typeof parsed.narrator_script === 'string') return normalizeScript(parsed.narrator_script);\n    } catch (error) {\n      continue;\n    }\n  }\n\n  return '';\n}\n\nfunction hasMojibake(value) {\n  const text = String(value || '');\n  if (!text) return false;\n  return /(Ã.|Ä.|Å.|Æ.|â€|á»|áº)/.test(text);\n}\n\nfunction extractGeminiScript(data) {\n  if (!data || typeof data !== 'object') return '';\n\n  const possibleJsonSources = [\n    data.script,\n    data.text,\n    data.output,\n    data.generatedText,\n    typeof data.response === 'string' ? data.response : '',\n    typeof data.content === 'string' ? data.content : '',\n    typeof data.message === 'string' ? data.message : '',\n  ].filter(Boolean);\n\n  for (const source of possibleJsonSources) {\n    const parsed = parseJsonCandidate(source);\n    if (parsed) return parsed;\n  }\n\n  return '';\n}\n\nfor (const item of $input.all()) {\n  const rewrite = item.json._rewrite || {};\n  const note = cleanText(rewrite.prior_note || item.json.Note || '');\n  const disabled = !rewrite.enabled;\n  const candidate = (((item.json.candidates || [])[0]) || {});\n  const finishReason = cleanText(candidate.finishReason || item.json.finishReason || '');\n  const script = extractGeminiScript(item.json);\n  const truncated = finishReason.toUpperCase() === 'MAX_TOKENS';\n  const tooShort = script && script.length < 80;\n  const invalidObjectLeak = /^\\[object Object\\]/i.test(script);\n  const mojibake = hasMojibake(script);\n\n  if (disabled) {\n    item.json.Narrator_Script = String(rewrite.fallback_script || '').slice(0, 8000);\n    item.json.Note = cleanText(`${note} | AI rewrite skipped: disabled by SCRIPT_REWRITE_ENABLED`);\n  } else if (script && !truncated && !tooShort && !invalidObjectLeak && !mojibake) {\n    item.json.Narrator_Script = script.slice(0, 8000);\n    item.json.Note = cleanText(`${note} | AI rewrite ready gemini=${rewrite.model}`);\n  } else {\n    const reason = truncated\n      ? 'MAX_TOKENS'\n      : invalidObjectLeak\n        ? 'invalid Gemini object output'\n        : mojibake\n          ? 'mojibake Gemini response'\n          : (tooShort ? 'short Gemini response' : 'empty or non-JSON Gemini response');\n    item.json.Narrator_Script = String(rewrite.fallback_script || '').slice(0, 8000);\n    item.json.Note = cleanText(`${note} | AI rewrite fallback: ${reason} gemini=${rewrite.model}`);\n  }\n\n  delete item.json._rewrite;\n  output.push(item);\n}\n\nreturn output;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5728,
+        2320
+      ],
+      "id": "f77e6438-01d6-4750-b8ab-0d504032737e",
+      "name": "Finalize Rewrite Script"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "mode": "list",
+          "cachedResultName": "AI Workflow",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1894467848,
+          "mode": "list",
+          "cachedResultName": "Threads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg/edit#gid=1894467848"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{$json.ID}}",
+            "Screenshots": "={{$json.Screenshots}}",
+            "Extracted_Content": "={{$json.Extracted_Content}}",
+            "Narrator_Script": "={{$json.Narrator_Script}}",
+            "Status": "={{$json.Status}}",
+            "Note": "={{$json.Note}}"
+          },
+          "matchingColumns": [
+            "ID"
+          ],
+          "schema": [
+            {
+              "id": "ID",
+              "displayName": "ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5952,
+        2320
+      ],
+      "id": "a61a3484-f283-407c-97ba-757fa3a215ed",
+      "name": "Update Sheet Row",
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_PHASE3_START_URL || 'http://n8n:5678/webhook/phase3-start' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { id: $json.ID, screenshots: $json.Screenshots || '', extracted_content: $json.Extracted_Content || '', narrator_script: $json.Narrator_Script || '', status: $json.Status, note: $json.Note || '' } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        6176,
+        2320
+      ],
+      "id": "707c94d6-79c8-4cac-a864-ed295c74a086",
+      "name": "Trigger Phase 3",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    }
+  ],
+  "connections": {
+    "Manual Test Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Threads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Phase 2 Start Webhook": {
+      "main": [
+        [
+          {
+            "node": "Read Threads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Threads Sheet": {
+      "main": [
+        [
+          {
+            "node": "Pick Pending Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Pending Row": {
+      "main": [
+        [
+          {
+            "node": "Run Screenshot Extractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Screenshot Extractor": {
+      "main": [
+        [
+          {
+            "node": "Prepare Rewrite Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Rewrite Payload": {
+      "main": [
+        [
+          {
+            "node": "Merge Rewrite Result",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "Gemini Rewrite Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Rewrite Request": {
+      "main": [
+        [
+          {
+            "node": "Merge Rewrite Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Rewrite Result": {
+      "main": [
+        [
+          {
+            "node": "Finalize Rewrite Script",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalize Rewrite Script": {
+      "main": [
+        [
+          {
+            "node": "Update Sheet Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Sheet Row": {
+      "main": [
+        [
+          {
+            "node": "Trigger Phase 3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e965c1161c5d66f2fabbe81680366123a2d2bc8401947f197a7c26514812ef19"
+  }
 }

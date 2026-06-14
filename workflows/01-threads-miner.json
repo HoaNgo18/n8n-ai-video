@@ -5,10 +5,10 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        1648,
-        1008
+        7984,
+        2064
       ],
-      "id": "93ff9ba7-f52d-4e8a-9de4-b309ab1a01db",
+      "id": "d49652e9-1ad2-478b-9bfb-f0c7db9e4dc7",
       "name": "Manual Test Trigger"
     },
     {
@@ -17,7 +17,7 @@
           "interval": [
             {
               "field": "hours",
-              "hoursInterval": 6
+              "hoursInterval": 12
             }
           ]
         }
@@ -25,25 +25,25 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.3,
       "position": [
-        1648,
-        1184
+        7984,
+        2240
       ],
-      "id": "1967f7fd-8878-4c6a-8a18-d12680015c48",
+      "id": "4ab15b8b-483d-4353-ab18-6c94f95b4eb1",
       "name": "Scheduler (every 6h)"
     },
     {
       "parameters": {
-        "url": "http://host.docker.internal:8000/phase1/threads-miner",
         "method": "POST",
+        "url": "http://host.docker.internal:8000/phase1/threads-miner",
         "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        1936,
-        1008
+        8272,
+        2064
       ],
-      "id": "af40cc8d-a985-4c44-beb9-aded0e34b4ea",
+      "id": "97cedf94-72b8-4015-bb8e-9fa3297deb37",
       "name": "Run Threads Miner"
     },
     {
@@ -53,10 +53,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2160,
-        1008
+        8496,
+        2064
       ],
-      "id": "daa3c9f4-f436-411e-b2aa-b081cb35f1c0",
+      "id": "a10da71c-a527-4ab7-931f-80d143bcbbac",
       "name": "Parse JSON Output"
     },
     {
@@ -66,16 +66,14 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2384,
-        1008
+        8720,
+        2064
       ],
-      "id": "0ff09081-2a35-4b4d-a611-345cb4de6ab5",
+      "id": "48c1f5d1-f02a-47af-a4b4-dddc856916b7",
       "name": "Prepare AI Classifier Payload"
     },
     {
       "parameters": {
-        "resource": "text",
-        "operation": "message",
         "modelId": {
           "__rl": true,
           "mode": "id",
@@ -84,8 +82,7 @@
         "messages": {
           "values": [
             {
-              "content": "={{ $json._classifier.prompt + '\\n\\nTEXT_PREVIEW:\\n' + ($json._classifier.preview || '') + '\\n\\nFIT_SCORE: ' + $json._classifier.fitScore + '\\nFIT_TAGS: ' + (($json._classifier.fitTags || []).join(', ') || 'none') + '\\nENGAGEMENT_SCORE: ' + $json._classifier.engagementScore + '\\nENGAGEMENT_METRICS: ' + JSON.stringify($json._classifier.engagementMetrics || []) + '\\nSTRONGEST_METRIC: ' + ($json._classifier.strongestMetric || 0) + '\\nMETRIC_COUNT: ' + ($json._classifier.metricCount || 0) + '\\n\\nNhac lai: chi tra ve JSON hop le, khong them giai thich.' }}",
-              "role": "user"
+              "content": "={{ $json._classifier.prompt + '\\n\\nTEXT_PREVIEW:\\n' + ($json._classifier.preview || '') + '\\n\\nFIT_SCORE: ' + $json._classifier.fitScore + '\\nFIT_TAGS: ' + (($json._classifier.fitTags || []).join(', ') || 'none') + '\\nENGAGEMENT_SCORE: ' + $json._classifier.engagementScore + '\\nENGAGEMENT_METRICS: ' + JSON.stringify($json._classifier.engagementMetrics || []) + '\\nSTRONGEST_METRIC: ' + ($json._classifier.strongestMetric || 0) + '\\nMETRIC_COUNT: ' + ($json._classifier.metricCount || 0) + '\\n\\nNhac lai: chi tra ve JSON hop le, khong them giai thich.' }}"
             }
           ]
         },
@@ -101,18 +98,18 @@
       "type": "@n8n/n8n-nodes-langchain.googleGemini",
       "typeVersion": 1.1,
       "position": [
-        2608,
-        1008
+        8944,
+        2064
       ],
-      "id": "0c943854-b5c2-424f-8273-2414707fe48b",
+      "id": "891e9812-484c-44ca-bfde-4b508bf6f19c",
       "name": "Gemini Content Classifier",
-      "onError": "continueRegularOutput",
       "credentials": {
         "googlePalmApi": {
           "id": "G4dMTEqzuDjrQ6aY",
           "name": "Google Gemini(PaLM) Api account"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -123,10 +120,10 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [
-        2832,
-        1136
+        9248,
+        2240
       ],
-      "id": "34592b31-9bb3-4869-a1bf-418c2548dd9d",
+      "id": "91573866-11d5-491e-9aa2-7f977d8d76ad",
       "name": "Merge Classifier Result"
     },
     {
@@ -136,10 +133,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3056,
-        1136
+        9440,
+        2240
       ],
-      "id": "9f347b2d-fae5-4424-b0aa-1731c3c67652",
+      "id": "bd1d0782-0ef4-4e3e-8950-4cc160037082",
       "name": "Finalize AI Classifier"
     },
     {
@@ -189,10 +186,10 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        3280,
-        1136
+        9680,
+        2240
       ],
-      "id": "36fa86c1-378f-4f4f-99d5-df8fa5a93f8f",
+      "id": "2461f7b5-ca06-4249-a853-c98f9bc7f88b",
       "name": "Normalize Sheet Row"
     },
     {
@@ -210,21 +207,19 @@
           "value": "Threads",
           "mode": "name"
         },
-        "operation": "read",
-        "range": "Threads!A:F",
         "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        2160,
-        1248
+        8784,
+        2416
       ],
-      "id": "4f03d161-ecb0-40c7-9b63-a21eae302b65",
+      "id": "2eaad439-3fd2-4b97-a461-8e1caa01a24d",
       "name": "Read Current Sheet",
       "credentials": {
         "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
+          "id": "vmA1pHEPcokiBOaZ",
           "name": "Google Sheets account"
         }
       }
@@ -232,7 +227,6 @@
     {
       "parameters": {
         "mode": "combine",
-        "combineBy": "combineByFields",
         "fieldsToMatchString": "ID",
         "joinMode": "keepNonMatches",
         "outputDataFrom": "input1",
@@ -241,10 +235,10 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [
-        3616,
-        1120
+        9872,
+        2400
       ],
-      "id": "1ae481c6-c58a-40be-ae4b-c9a2c33ab0b5",
+      "id": "d2f890a6-dd52-4cba-a21b-835d18e87f02",
       "name": "Deduplicate by ID"
     },
     {
@@ -268,7 +262,6 @@
           "value": {
             "ID": "={{ $json.ID }}",
             "Source_URL": "={{ $json.Source_URL }}",
-            "Source": "={{ $json.Source }}",
             "Collected_At": "={{ $json.Collected_At }}",
             "Status": "={{ $json.Status }}",
             "Note": "={{ $json.Note }}"
@@ -287,15 +280,6 @@
             {
               "id": "Source_URL",
               "displayName": "Source_URL",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true
-            },
-            {
-              "id": "Source",
-              "displayName": "Source",
               "required": false,
               "defaultMatch": false,
               "display": true,
@@ -401,26 +385,6 @@
               "removed": false
             },
             {
-              "id": "Draft_Video_URL",
-              "displayName": "Draft_Video_URL",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
-              "id": "Draft_Drive_File_ID",
-              "displayName": "Draft_Drive_File_ID",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": false
-            },
-            {
               "id": "Admin_Decision",
               "displayName": "Admin_Decision",
               "required": false,
@@ -459,6 +423,26 @@
               "type": "string",
               "canBeUsedToMatch": true,
               "removed": false
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
             }
           ],
           "attemptToConvertTypes": false,
@@ -469,14 +453,14 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        3824,
-        1120
+        10144,
+        2400
       ],
-      "id": "e504d7a4-79fa-4713-87e9-5ef90bfabcce",
+      "id": "a0d30fb1-731d-4a99-8cd5-ecb752d1e632",
       "name": "Append to Sheet",
       "credentials": {
         "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
+          "id": "vmA1pHEPcokiBOaZ",
           "name": "Google Sheets account"
         }
       }
@@ -485,7 +469,6 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "phase1-search-callback",
-        "responseMode": "onReceived",
         "options": {
           "responseData": "{\"ok\":true}"
         }
@@ -493,12 +476,35 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
       "position": [
-        1648,
-        1360
+        7488,
+        2400
       ],
-      "id": "phase1-search-webhook",
+      "id": "687a8f51-0bc6-412f-81c3-851e73d136e7",
       "name": "Telegram Search Webhook",
       "webhookId": "phase1-search-callback"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_PHASE2_START_URL || 'http://n8n:5678/webhook/phase2-start' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { id: $json.ID } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        10384,
+        2400
+      ],
+      "id": "46099671-f8b5-47e4-b147-9c08b32321ac",
+      "name": "Trigger Phase 2",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
@@ -507,10 +513,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1936,
-        1360
+        7984,
+        2400
       ],
-      "id": "phase1-parse-telegram-search",
+      "id": "9328e819-dac5-4f3c-a68b-62c8b9d47b28",
       "name": "Parse Telegram Search Request"
     },
     {
@@ -527,10 +533,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        2160,
-        1520
+        8288,
+        2608
       ],
-      "id": "phase1-reply-search-accepted",
+      "id": "1d23ccb7-f46d-40dd-ab6e-e34bc195d6ac",
       "name": "Reply Search Accepted"
     },
     {
@@ -547,10 +553,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        2160,
-        1360
+        8288,
+        2400
       ],
-      "id": "phase1-run-threads-search",
+      "id": "2f513b27-075c-4407-9ccf-2cc87fd84728",
       "name": "Run Threads Search"
     },
     {
@@ -567,10 +573,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        2384,
-        1520
+        8800,
+        2624
       ],
-      "id": "phase1-reply-search-result",
+      "id": "bbc58a22-fbc5-49b8-87bd-72258c803233",
       "name": "Reply Search Result"
     }
   ],
@@ -711,6 +717,28 @@
         ]
       ]
     },
+    "Append to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Trigger Phase 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Search Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Telegram Search Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Parse Telegram Search Request": {
       "main": [
         [
@@ -718,15 +746,9 @@
             "node": "Reply Search Accepted",
             "type": "main",
             "index": 0
-          }
-        ]
-      ]
-    },
-    "Reply Search Accepted": {
-      "main": [
-        [
+          },
           {
-            "node": "Route Telegram Mode",
+            "node": "Run Threads Search",
             "type": "main",
             "index": 0
           }
@@ -748,27 +770,11 @@
           }
         ]
       ]
-    },
-    "Telegram Search Webhook": {
-      "main": [
-        [
-          {
-            "node": "Parse Telegram Search Request",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
-  "name": "Phase 1 - Thread Miner v2",
   "pinData": {},
   "meta": {
-    "instanceId": "6c30afaa852f74e02f831710b585be20efcca194df2402dde964823fcb63a143"
-  },
-  "id": "phase1v2test1I25ZXNq",
-  "active": false,
-  "settings": {
-    "executionOrder": "v1"
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e965c1161c5d66f2fabbe81680366123a2d2bc8401947f197a7c26514812ef19"
   }
 }

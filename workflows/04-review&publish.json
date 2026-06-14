@@ -2,14 +2,32 @@
   "nodes": [
     {
       "parameters": {},
-      "id": "phase4v2-manual",
+      "id": "190980ff-3565-4a5a-adf8-6ea9397c5cc3",
       "name": "Manual Tick Trigger",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        128,
-        304
+        -160,
+        816
       ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "phase4-start",
+        "options": {
+          "responseData": "{\"ok\":true}"
+        }
+      },
+      "id": "b2a3eacc-2e47-4b2f-a8c8-3288d212aa4c",
+      "name": "Phase 4 Start Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -160,
+        976
+      ],
+      "webhookId": "phase4-start"
     },
     {
       "parameters": {
@@ -28,13 +46,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-read",
+      "id": "df30f121-c088-41a7-833c-d84a31823f42",
       "name": "Read Threads Sheet",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        368,
-        304
+        80,
+        816
       ],
       "credentials": {
         "googleApi": {
@@ -45,15 +63,15 @@
     },
     {
       "parameters": {
-        "jsCode": "for (const item of $input.all()) {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const videoPath = String(item.json.Video_Path || '').trim();\n  const caption = String(item.json.Caption || '').trim();\n  const draftUrl = String(item.json.Draft_Video_URL || '').trim();\n  const publishId = String(item.json.TikTok_Publish_ID || '').trim();\n\n  if (status === 'draft' && videoPath && caption && !draftUrl) {\n    return [{\n      json: {\n        action: 'create_review',\n        ID: item.json.ID,\n        Video_Path: item.json.Video_Path,\n        Caption: item.json.Caption,\n      },\n    }];\n  }\n\n  if (status === 'approved' && videoPath && caption && !publishId) {\n    return [{\n      json: {\n        action: 'publish',\n        ID: item.json.ID,\n        Video_Path: item.json.Video_Path,\n        Caption: item.json.Caption,\n      },\n    }];\n  }\n}\n\nreturn [{ json: { action: 'idle', Note: 'Phase 4: no eligible row found' } }];"
+        "jsCode": "function getTargetId() {\n  try {\n    const webhookItem = $('Phase 4 Start Webhook').first();\n    const payload = webhookItem.json.body || webhookItem.json || {};\n    return String(payload.id || '').trim();\n  } catch (error) {\n    return '';\n  }\n}\n\nconst targetId = getTargetId();\nfor (const item of $input.all()) {\n  const id = String(item.json.ID || '').trim();\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const videoPath = String(item.json.Video_Path || '').trim();\n  const caption = String(item.json.Caption || '').trim();\n  const draftUrl = String(item.json.Draft_Video_URL || '').trim();\n  const publishId = String(item.json.TikTok_Publish_ID || '').trim();\n\n  if (targetId && id !== targetId) continue;\n\n  if (status === 'draft' && videoPath && caption && !draftUrl) {\n    return [{\n      json: {\n        action: 'create_review',\n        ID: item.json.ID,\n        Video_Path: item.json.Video_Path,\n        Caption: item.json.Caption,\n      },\n    }];\n  }\n\n  if (status === 'approved' && videoPath && caption && !publishId) {\n    return [{\n      json: {\n        action: 'publish',\n        ID: item.json.ID,\n        Video_Path: item.json.Video_Path,\n        Caption: item.json.Caption,\n      },\n    }];\n  }\n}\n\nreturn [{ json: { action: 'idle', Note: 'Phase 4: no eligible row found' } }];"
       },
-      "id": "phase4v2-pick",
+      "id": "3d55582d-b348-4abb-b640-919a9be652d1",
       "name": "Pick Phase 4 Action",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        608,
-        304
+        320,
+        816
       ]
     },
     {
@@ -61,13 +79,13 @@
         "mode": "expression",
         "output": "={{ $json.action === 'create_review' ? 0 : $json.action === 'publish' ? 1 : 2 }}"
       },
-      "id": "phase4v2-route",
+      "id": "b9fca1bd-f1ab-4e23-91e7-e9b0d3f30169",
       "name": "Route Phase 4 Action",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.4,
       "position": [
-        848,
-        304
+        560,
+        816
       ]
     },
     {
@@ -81,13 +99,13 @@
           "timeout": 30000
         }
       },
-      "id": "phase4v2-send-telegram",
+      "id": "cc9b2d0a-6ce7-4f13-a8dc-874964c62bdf",
       "name": "Send Telegram Review Link",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        1328,
-        48
+        1040,
+        560
       ],
       "retryOnFail": true,
       "maxTries": 2,
@@ -303,13 +321,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-update-review",
+      "id": "76712bdf-0de4-41dc-bc12-25c66009ef5c",
       "name": "Update Draft Review Row",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1328,
-        208
+        1040,
+        720
       ],
       "credentials": {
         "googleApi": {
@@ -524,13 +542,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-mark",
+      "id": "5d42fed3-4af3-47e0-b752-aafa37a67b7c",
       "name": "Mark Publishing Row",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1104,
-        320
+        816,
+        832
       ],
       "credentials": {
         "googleApi": {
@@ -550,13 +568,13 @@
           "timeout": 1200000
         }
       },
-      "id": "phase4v2-publish",
+      "id": "e5f3e06a-f29c-4d6e-9562-dbd59605af06",
       "name": "Auto Publish TikTok",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        1328,
-        320
+        1040,
+        832
       ],
       "retryOnFail": true,
       "maxTries": 1,
@@ -772,13 +790,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-update-publish",
+      "id": "0dea67e0-9bd0-4dc0-92d9-5e020e702f13",
       "name": "Update Publish Result Row",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1568,
-        320
+        1280,
+        832
       ],
       "credentials": {
         "googleApi": {
@@ -791,18 +809,17 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "phase4-review-callback",
-        "responseMode": "onReceived",
         "options": {
           "responseData": "{\"ok\":true}"
         }
       },
-      "id": "phase4v2-webhook",
+      "id": "895ebed5-cca8-4310-93d5-6fbe4dcfaa5b",
       "name": "Telegram Callback Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
       "position": [
-        128,
-        640
+        -160,
+        1152
       ],
       "webhookId": "phase4-review-callback"
     },
@@ -817,13 +834,13 @@
           "timeout": 1200000
         }
       },
-      "id": "phase4v2-save-decision",
+      "id": "5d3854e4-46f7-494f-8404-113129f5014a",
       "name": "Save Admin Decision + Ack Telegram",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        368,
-        640
+        80,
+        1152
       ]
     },
     {
@@ -850,13 +867,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-callback-route",
+      "id": "dceb2af5-1e04-4b83-bdbd-ffd318021660",
       "name": "Callback Approved?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        608,
-        640
+        320,
+        1152
       ]
     },
     {
@@ -876,13 +893,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-read-after-callback",
+      "id": "49d31fe0-1a39-4f8a-8159-5016aed7d679",
       "name": "Read Sheet After Callback",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        864,
-        624
+        576,
+        1136
       ],
       "credentials": {
         "googleApi": {
@@ -895,13 +912,13 @@
       "parameters": {
         "jsCode": "const decision = $('Save Admin Decision + Ack Telegram').item.json;\nconst approvedId = String(decision.id || '').trim();\nif (!approvedId) {\n  throw new Error('Approved callback did not return a row ID');\n}\n\nfor (const item of $input.all()) {\n  const id = String(item.json.ID || '').trim();\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const videoPath = String(item.json.Video_Path || '').trim();\n  const caption = String(item.json.Caption || '').trim();\n  const publishId = String(item.json.TikTok_Publish_ID || '').trim();\n  if (id !== approvedId) continue;\n  if (status !== 'approved') continue;\n  if (!videoPath || !caption || publishId) continue;\n\n  return [{\n    json: {\n      ID: item.json.ID,\n      Video_Path: item.json.Video_Path,\n      Caption: item.json.Caption,\n    },\n  }];\n}\n\nreturn [{ json: { ID: approvedId, Status: 'Publish Failed', Note: 'Phase 4: approved row was not publishable after callback' } }];"
       },
-      "id": "phase4v2-pick-callback-publish",
+      "id": "0a966b9c-916c-4841-b5af-26899783b684",
       "name": "Pick Callback Publish Row",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1088,
-        624
+        800,
+        1136
       ]
     },
     {
@@ -1110,13 +1127,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-mark-callback-publish",
+      "id": "8cbe6088-2772-43e6-96e2-6e21885ba3e9",
       "name": "Mark Callback Publishing Row",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1328,
-        624
+        1040,
+        1136
       ],
       "credentials": {
         "googleApi": {
@@ -1136,13 +1153,13 @@
           "timeout": 1200000
         }
       },
-      "id": "phase4v2-callback-publish",
+      "id": "8a0d0254-c7c2-4b39-be04-3bbb865956fa",
       "name": "Auto Publish TikTok From Callback",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        1568,
-        624
+        1280,
+        1136
       ],
       "retryOnFail": true,
       "maxTries": 1,
@@ -1358,13 +1375,13 @@
         },
         "options": {}
       },
-      "id": "phase4v2-update-callback-publish",
+      "id": "b40953d2-ab6d-44a2-8d95-8e30f9812fc1",
       "name": "Update Callback Publish Result Row",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1792,
-        624
+        1504,
+        1136
       ],
       "credentials": {
         "googleApi": {
@@ -1384,13 +1401,13 @@
           "timeout": 120000
         }
       },
-      "id": "phase4v3-local-review",
+      "id": "a0967113-e1d9-4194-8e36-5e0419256434",
       "name": "Create Local Review Link",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        1088,
-        128
+        800,
+        640
       ],
       "retryOnFail": true,
       "maxTries": 2,
@@ -1399,6 +1416,17 @@
   ],
   "connections": {
     "Manual Tick Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Threads Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Phase 4 Start Webhook": {
       "main": [
         [
           {
@@ -1446,8 +1474,7 @@
             "type": "main",
             "index": 0
           }
-        ],
-        []
+        ]
       ]
     },
     "Mark Publishing Row": {

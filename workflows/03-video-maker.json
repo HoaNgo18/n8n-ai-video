@@ -5,29 +5,36 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        80,
-        880
+        2000,
+        1408
       ],
-      "id": "a9ec2f33-fb77-45a4-a1dc-bb8c80614df8",
+      "id": "484ca989-a86d-4479-a08f-877415229a79",
       "name": "Manual Test Trigger"
     },
     {
-      "parameters": {},
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "phase3-start",
+        "options": {
+          "responseData": "{\"ok\":true}"
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
       "position": [
-        880,
-        1200
+        1984,
+        1600
       ],
-      "id": "manual-merge-trigger-phase3",
-      "name": "Manual Merge Trigger"
+      "id": "62118ed1-25e5-4cd3-a16a-5bbf0aa60d7c",
+      "name": "Phase 3 Start Webhook",
+      "webhookId": "phase3-start"
     },
     {
       "parameters": {
         "authentication": "serviceAccount",
         "documentId": {
           "__rl": true,
-          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
           "mode": "list",
           "cachedResultName": "GOOGLE_SHEET_ID",
           "cachedResultUrl": ""
@@ -37,68 +44,66 @@
           "value": "Threads",
           "mode": "name"
         },
-        "operation": "read",
-        "range": "Threads!A:Z",
         "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        304,
-        880
+        2256,
+        1408
       ],
-      "id": "85c1f97f-a4be-4e5d-965b-f4ab8011f064",
+      "id": "e9666cce-99d9-47d6-a239-fc82642dd6c1",
       "name": "Read Threads Sheet",
       "credentials": {
         "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
+          "id": "vmA1pHEPcokiBOaZ",
           "name": "Google Sheets account"
         }
       }
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().filter(item => {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasScript = String(item.json.Narrator_Script || '').trim();\n  const hasAudio = String(item.json.Audio_Path || '').trim();\n  return status === 'in progress' && hasScript && !hasAudio;\n});\n\nreturn rows.slice(0, 1);"
+        "jsCode": "function getWebhookPayload() {\n  try {\n    const webhookItem = $('Phase 3 Start Webhook').first();\n    return webhookItem.json.body || webhookItem.json || {};\n  } catch (error) {\n    return {};\n  }\n}\n\nconst payload = getWebhookPayload();\nconst targetId = String(payload.id || payload.ID || '').trim();\nconst targetStatus = String(payload.status || payload.Status || '').trim().toLowerCase();\nconst targetScript = String(payload.narrator_script || payload.Narrator_Script || '').trim();\nconst targetAudio = String(payload.audio_path || payload.Audio_Path || '').trim();\n\nif (targetId && targetStatus === 'in progress' && targetScript && !targetAudio) {\n  return [{\n    json: {\n      ID: targetId,\n      Narrator_Script: payload.Narrator_Script || payload.narrator_script || '',\n      Extracted_Content: payload.Extracted_Content || payload.extracted_content || '',\n      Status: payload.Status || payload.status || 'In Progress',\n      Note: payload.Note || payload.note || '',\n    },\n  }];\n}\n\nconst rows = $input.all().filter(item => {\n  const id = String(item.json.ID || '').trim();\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasScript = String(item.json.Narrator_Script || '').trim();\n  const hasAudio = String(item.json.Audio_Path || '').trim();\n  if (targetId && id !== targetId) return false;\n  return status === 'in progress' && hasScript && !hasAudio;\n});\n\nreturn rows.slice(0, 1);"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        720
+        2512,
+        1168
       ],
-      "id": "e4218630-b1eb-4c28-9765-60649757f59d",
+      "id": "80855357-a1e8-4f8b-8021-7fbe5242f106",
       "name": "Pick Voice Row"
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().filter(item => {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasScreenshots = String(item.json.Screenshots || '').trim();\n  const hasAudio = String(item.json.Audio_Path || '').trim();\n  const hasTiming = String(item.json.Audio_Timing || '').trim();\n  const hasVisual = String(item.json.Visual_Video_Path || '').trim();\n  return status === 'in progress' && hasScreenshots && hasAudio && hasTiming && !hasVisual;\n});\n\nreturn rows.slice(0, 1);"
+        "jsCode": "function getTargetId() {\n  try {\n    const webhookItem = $('Phase 3 Start Webhook').first();\n    const payload = webhookItem.json.body || webhookItem.json || {};\n    return String(payload.id || '').trim();\n  } catch (error) {\n    return '';\n  }\n}\n\nconst targetId = getTargetId();\nconst rows = $input.all().filter(item => {\n  const id = String(item.json.ID || '').trim();\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const hasScreenshots = String(item.json.Screenshots || '').trim();\n  const hasAudio = String(item.json.Audio_Path || '').trim();\n  const hasTiming = String(item.json.Audio_Timing || '').trim();\n  const hasVisual = String(item.json.Visual_Video_Path || '').trim();\n  if (targetId && id !== targetId) return false;\n  return status === 'in progress' && hasScreenshots && hasAudio && hasTiming && !hasVisual;\n});\n\nreturn rows.slice(0, 1);"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        560,
-        880
+        2512,
+        1328
       ],
-      "id": "8140d053-7480-4af4-ae02-99f8f788e3ec",
+      "id": "859890d7-e640-49d8-8bac-23a20b419231",
       "name": "Pick Visual Row"
     },
     {
       "parameters": {
-        "jsCode": "const rows = $input.all().filter(item => {\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const audioPath = String(item.json.Audio_Path || '').trim();\n  const visualPath = String(item.json.Visual_Video_Path || '').trim();\n  const finalPath = String(item.json.Video_Path || '').trim();\n  return status === 'in progress' && audioPath && visualPath && !finalPath;\n});\n\nreturn rows.slice(0, 1);"
+        "jsCode": "function getTargetId() {\n  try {\n    const webhookItem = $('Phase 3 Start Webhook').first();\n    const payload = webhookItem.json.body || webhookItem.json || {};\n    return String(payload.id || '').trim();\n  } catch (error) {\n    return '';\n  }\n}\n\nconst targetId = getTargetId();\nconst rows = $input.all().filter(item => {\n  const id = String(item.json.ID || '').trim();\n  const status = String(item.json.Status || '').trim().toLowerCase();\n  const audioPath = String(item.json.Audio_Path || '').trim();\n  const visualPath = String(item.json.Visual_Video_Path || '').trim();\n  const finalPath = String(item.json.Video_Path || '').trim();\n  if (targetId && id !== targetId) return false;\n  return status === 'in progress' && audioPath && visualPath && !finalPath;\n});\n\nreturn rows.slice(0, 1);"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1328,
-        1200
+        3360,
+        1600
       ],
-      "id": "e7d0db27-2fc9-40aa-a9ad-06dbd8967a34",
+      "id": "b618de55-5d33-450e-81e2-884fc68b7968",
       "name": "Pick Merge Row"
     },
     {
       "parameters": {
-        "url": "http://host.docker.internal:8000/phase3/voice",
         "method": "POST",
+        "url": "http://host.docker.internal:8000/phase3/voice",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { id: $json.ID, script: $json.Narrator_Script, extracted_content: $json.Extracted_Content || '' } }}",
@@ -109,10 +114,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        816,
-        720
+        2768,
+        1168
       ],
-      "id": "ef1d6377-1c04-45b7-abf6-20a62ef7f2be",
+      "id": "6509f73e-66e7-42aa-8d99-bf4f648ac36b",
       "name": "Run Voice Generator",
       "retryOnFail": true,
       "maxTries": 2,
@@ -120,8 +125,8 @@
     },
     {
       "parameters": {
-        "url": "http://host.docker.internal:8000/phase3/visual",
         "method": "POST",
+        "url": "http://host.docker.internal:8000/phase3/visual",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { id: $json.ID, screenshots: $json.Screenshots, script: $json.Narrator_Script || '', audio_path: $json.Audio_Path || '', audio_timing: $json.Audio_Timing || '', extracted_content: $json.Extracted_Content || '' } }}",
@@ -132,10 +137,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        816,
-        880
+        2768,
+        1328
       ],
-      "id": "8e690f37-8e85-4da7-9431-c7cf7885ed70",
+      "id": "f2a50f98-89f4-425a-9bbe-2dcf1af831de",
       "name": "Run Visual Builder",
       "retryOnFail": true,
       "maxTries": 2,
@@ -143,8 +148,8 @@
     },
     {
       "parameters": {
-        "url": "http://host.docker.internal:8000/phase3/merge",
         "method": "POST",
+        "url": "http://host.docker.internal:8000/phase3/merge",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { id: $json.ID, audio_path: $json.Audio_Path, visual_path: $json.Visual_Video_Path, script: $json.Narrator_Script || '', extracted_content: $json.Extracted_Content || '' } }}",
@@ -155,10 +160,10 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        1584,
-        1200
+        3600,
+        1600
       ],
-      "id": "00ee4ef5-ec4c-4063-bdc8-94794bc63433",
+      "id": "3c2a893c-cfd2-41ff-a6fe-8886138a13f7",
       "name": "Run Merge Final",
       "retryOnFail": true,
       "maxTries": 2,
@@ -170,7 +175,7 @@
         "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
-          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
           "mode": "list",
           "cachedResultName": "GOOGLE_SHEET_ID",
           "cachedResultUrl": ""
@@ -203,6 +208,26 @@
               "canBeUsedToMatch": true
             },
             {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
               "id": "Status",
               "displayName": "Status",
               "required": false,
@@ -210,6 +235,36 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
             },
             {
               "id": "Audio_Path",
@@ -230,6 +285,66 @@
               "canBeUsedToMatch": true
             },
             {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
               "id": "Note",
               "displayName": "Note",
               "required": false,
@@ -237,6 +352,26 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
             }
           ],
           "attemptToConvertTypes": false,
@@ -247,14 +382,14 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1072,
-        720
+        3024,
+        1168
       ],
-      "id": "270e5db1-bc1e-4058-aa8a-5235144c0cdd",
+      "id": "16232393-d513-44c2-a56b-519bc5330f1e",
       "name": "Update Voice Row",
       "credentials": {
         "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
+          "id": "vmA1pHEPcokiBOaZ",
           "name": "Google Sheets account"
         }
       }
@@ -265,7 +400,7 @@
         "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
-          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
           "mode": "list",
           "cachedResultName": "GOOGLE_SHEET_ID",
           "cachedResultUrl": ""
@@ -297,6 +432,26 @@
               "canBeUsedToMatch": true
             },
             {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
               "id": "Status",
               "displayName": "Status",
               "required": false,
@@ -304,6 +459,56 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
             },
             {
               "id": "Visual_Video_Path",
@@ -315,6 +520,56 @@
               "canBeUsedToMatch": true
             },
             {
+              "id": "Video_Path",
+              "displayName": "Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
               "id": "Note",
               "displayName": "Note",
               "required": false,
@@ -322,6 +577,26 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
             }
           ],
           "attemptToConvertTypes": false,
@@ -332,14 +607,14 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1072,
-        880
+        2976,
+        1328
       ],
-      "id": "5f7fbf69-2f92-4ba7-b09b-c716946b9cc9",
+      "id": "e253b616-537b-48c1-b69d-05bcb4061dd3",
       "name": "Update Visual Row",
       "credentials": {
         "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
+          "id": "vmA1pHEPcokiBOaZ",
           "name": "Google Sheets account"
         }
       }
@@ -350,7 +625,7 @@
         "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
-          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
           "mode": "list",
           "cachedResultName": "GOOGLE_SHEET_ID",
           "cachedResultUrl": ""
@@ -383,6 +658,26 @@
               "canBeUsedToMatch": true
             },
             {
+              "id": "Source_URL",
+              "displayName": "Source_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Collected_At",
+              "displayName": "Collected_At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
               "id": "Status",
               "displayName": "Status",
               "required": false,
@@ -390,6 +685,66 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "Screenshots",
+              "displayName": "Screenshots",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Extracted_Content",
+              "displayName": "Extracted_Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Narrator_Script",
+              "displayName": "Narrator_Script",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Path",
+              "displayName": "Audio_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Audio_Timing",
+              "displayName": "Audio_Timing",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Visual_Video_Path",
+              "displayName": "Visual_Video_Path",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
             },
             {
               "id": "Video_Path",
@@ -410,6 +765,36 @@
               "canBeUsedToMatch": true
             },
             {
+              "id": "Admin_Decision",
+              "displayName": "Admin_Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "TikTok_Publish_ID",
+              "displayName": "TikTok_Publish_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Published_URL",
+              "displayName": "Published_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
               "id": "Note",
               "displayName": "Note",
               "required": false,
@@ -417,6 +802,26 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "Draft_Video_URL",
+              "displayName": "Draft_Video_URL",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Draft_Drive_File_ID",
+              "displayName": "Draft_Drive_File_ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
             }
           ],
           "attemptToConvertTypes": false,
@@ -427,24 +832,47 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        2736,
-        1200
+        4672,
+        1584
       ],
-      "id": "ff657628-ca2e-4fb6-b608-6fe63a748f52",
+      "id": "c5a26d52-8da3-4d56-86ac-d65fcea68f3c",
       "name": "Update Merge Row",
       "credentials": {
         "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
+          "id": "vmA1pHEPcokiBOaZ",
           "name": "Google Sheets account"
         }
       }
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "=http://n8n:5678/webhook/phase4-start",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { id: $json.ID, video_path: $json.Video_Path || '', caption: $json.Caption || '', status: $json.Status, note: $json.Note || '', draft_video_url: $json.Draft_Video_URL || '', tiktok_publish_id: $json.TikTok_Publish_ID || '' } }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        4880,
+        1584
+      ],
+      "id": "f03ad121-8d53-4f00-ada2-e3c9251c93d5",
+      "name": "Trigger Phase 4",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
         "authentication": "serviceAccount",
         "documentId": {
           "__rl": true,
-          "value": "={{ $env.GOOGLE_SHEET_ID }}",
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
           "mode": "list",
           "cachedResultName": "GOOGLE_SHEET_ID",
           "cachedResultUrl": ""
@@ -454,21 +882,19 @@
           "value": "Threads",
           "mode": "name"
         },
-        "operation": "read",
-        "range": "Threads!A:Z",
         "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        1072,
-        1200
+        3136,
+        1600
       ],
-      "id": "b0f5d7b9-9d64-4f60-a33d-7d06cb617001",
+      "id": "33cbcf97-c1e1-47bb-a6d0-df7daede6dbc",
       "name": "Read Threads Sheet For Merge",
       "credentials": {
         "googleApi": {
-          "id": "VEmpv0MmVvoaBa11",
+          "id": "vmA1pHEPcokiBOaZ",
           "name": "Google Sheets account"
         }
       }
@@ -480,16 +906,14 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1840,
-        1200
+        3824,
+        1600
       ],
-      "id": "phase3-prepare-ai-caption",
+      "id": "a3007880-3d07-46a6-a110-694f31e77f07",
       "name": "Prepare AI Caption"
     },
     {
       "parameters": {
-        "resource": "text",
-        "operation": "message",
         "modelId": {
           "__rl": true,
           "mode": "id",
@@ -498,7 +922,6 @@
         "messages": {
           "values": [
             {
-              "role": "user",
               "content": "={{ $json._caption.prompt + '\\n\\nNARRATOR_SCRIPT:\\n' + ($json._caption.script || '(none)') + '\\n\\nPOST_TEXT:\\n' + ($json._caption.post || '(none)') + '\\n\\nSOURCE_SEGMENTS:\\n- ' + ((($json._caption.segments || []).length ? $json._caption.segments : ['(none)']).join('\\n- ')) + '\\n\\nCOMMENTS:\\n- ' + ((($json._caption.comments || []).length ? $json._caption.comments : ['(none)']).join('\\n- ')) + '\\n\\nFALLBACK_CAPTION:\\n' + ($json._caption.fallback_caption || '') + '\\n\\nReturn JSON only.' }}"
             }
           ]
@@ -515,15 +938,15 @@
       "type": "@n8n/n8n-nodes-langchain.googleGemini",
       "typeVersion": 1.1,
       "position": [
-        2096,
-        1040
+        4000,
+        1408
       ],
-      "id": "phase3-gemini-ai-caption",
+      "id": "65eebbe5-adea-406d-aac4-b57c1a6c855b",
       "name": "Gemini AI Caption Request",
       "credentials": {
         "googlePalmApi": {
-          "id": "G4dMTEqzuDjrQ6aY",
-          "name": "Google Gemini(PaLM) Api account"
+          "id": "EFiNS8DZN9NwjInq",
+          "name": "Google Gemini(PaLM) Api account 2"
         }
       }
     },
@@ -536,10 +959,10 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3,
       "position": [
-        2320,
-        1200
+        4272,
+        1584
       ],
-      "id": "phase3-merge-ai-caption-result",
+      "id": "c3f2c053-50fe-48d4-be2d-2bf89ddbdde4",
       "name": "Merge AI Caption Result"
     },
     {
@@ -549,10 +972,10 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2528,
-        1200
+        4480,
+        1584
       ],
-      "id": "phase3-finalize-ai-caption",
+      "id": "2e49b8dd-0562-4a2c-b145-992404e05b5d",
       "name": "Finalize AI Caption"
     }
   ],
@@ -568,11 +991,11 @@
         ]
       ]
     },
-    "Manual Merge Trigger": {
+    "Phase 3 Start Webhook": {
       "main": [
         [
           {
-            "node": "Read Threads Sheet For Merge",
+            "node": "Read Threads Sheet",
             "type": "main",
             "index": 0
           }
@@ -683,6 +1106,17 @@
         ]
       ]
     },
+    "Update Merge Row": {
+      "main": [
+        [
+          {
+            "node": "Trigger Phase 4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Read Threads Sheet For Merge": {
       "main": [
         [
@@ -751,6 +1185,7 @@
   },
   "pinData": {},
   "meta": {
-    "instanceId": "6c30afaa852f74e02f831710b585be20efcca194df2402dde964823fcb63a143"
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e965c1161c5d66f2fabbe81680366123a2d2bc8401947f197a7c26514812ef19"
   }
 }

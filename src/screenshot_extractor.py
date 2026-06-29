@@ -49,6 +49,13 @@ MAX_SCRIPT_TEXT_LENGTH = 8000
 MIN_ACCEPTED_COMMENT_COUNT = 3
 MAX_COMMENT_CAPTURE_ATTEMPTS = 8
 COMMENT_CAPTURE_WAIT_MS = 2500
+LOW_VALUE_COMMENT_PATTERNS = (
+    r"^(?:minh|toi|em|anh|chi)?\s*quan tam(?:\s+(?:a|ah|nha|nhe|voi))?$",
+    r"^(?:ban\s+)?nhan\s+(?:mk|mik|minh|toi|em)(?:\s+(?:nha|nhe|a|ah))?$",
+    r"^(?:ib|inbox|check ib|check inbox)(?:\s+(?:minh|toi|em|ban))?(?:\s+(?:nha|nhe|a|ah))?$",
+    r"^(?:cho\s+(?:minh|em|toi)\s+)?xin\s+(?:info|in4|link|gia)(?:\s+(?:voi|a|ah|nha|nhe))?$",
+    r"^(?:gui|pass)\s+(?:info|in4|link|gia)(?:\s+(?:minh|toi|em))?$",
+)
 SALES_KEYWORDS = (
     "gia",
     "bao gia",
@@ -237,6 +244,45 @@ def clean_text(text: str) -> str:
     for word in noisy_words:
         text = re.sub(rf"\b{re.escape(word)}\b", "", text, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_post_list_text(text: str) -> str:
+    raw = str(text or "").replace("\r", "")
+    if not raw or "\n" not in raw:
+        return raw
+
+    lines = [line.strip() for line in raw.split("\n")]
+    meaningful = [line for line in lines if line and line.lower() != "translate"]
+    if len(meaningful) < 3:
+        return raw
+
+    header = meaningful[0]
+    tail = meaningful[1:]
+    list_like_lines = [
+        line
+        for line in tail
+        if line not in {".", "-", "•"}
+        and (
+            " - " in line
+            or line.startswith(("-", "•", "*"))
+            or len(line.split()) <= 8
+        )
+    ]
+    if len(list_like_lines) < 2:
+        return raw
+
+    normalized_tail = []
+    for line in tail:
+        if line in {".", "-", "•"}:
+            continue
+        line = re.sub(r"^[\-•*]+\s*", "", line).strip()
+        if line:
+            normalized_tail.append(line.rstrip(".,;:!?"))
+
+    if not normalized_tail:
+        return header
+
+    return f"{header.rstrip(' .')}. " + ". ".join(normalized_tail)
 
 
 def strip_threads_context_noise(text: str) -> str:
@@ -470,6 +516,33 @@ def strip_leading_known_author(text: str, *author_values: object) -> str:
     return clean_text(text)
 
 
+def strip_leading_comment_metadata(text: str) -> str:
+    text = clean_text(text)
+    if not text:
+        return ""
+
+    previous = None
+    while text != previous:
+        previous = text
+        text = re.sub(r"^(?:da\s+ghim|đã\s+ghim|ghim)\b[\s:.,;·-]*", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"^(?:·\s*)?(?:tac\s+gia|tác\s+giả|author)\b[\s:.,;·-]*", " ", text, flags=re.IGNORECASE)
+        text = re.sub(
+            rf"^(?:Pinned\s+)?@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){{0,4}}\s*/\s*\d{{2,4}}\b[\s:.,;·-]*",
+            " ",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            rf"^(?:Pinned\s+)?@?[A-Za-z0-9_.]+(?:\s+[A-Za-z0-9_.&'/-]+){{0,4}}\s+\d{{1,2}}[/-]\d{{2,4}}\b[\s:.,;·-]*",
+            " ",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(r"^(?:[./-]\s*)?\d{4}\b[\s:.,;·-]*", " ", text)
+        text = clean_text(text)
+    return clean_text(text)
+
+
 def strip_trailing_metrics(text: str) -> str:
     text = clean_text(text)
     text = re.sub(r"(?:\s+\d+(?:[.,]\d+)?[KM]?){2,}\s*$", "", text, flags=re.IGNORECASE)
@@ -533,6 +606,8 @@ def extract_engagement_score(text: str) -> int:
 
 
 def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
+    if not is_comment:
+        text = normalize_post_list_text(text)
     text = trim_ui_text(text)
     text = re.sub(r"\bAuthor\b", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\bTop\s+View activity\b", "", text, flags=re.IGNORECASE)
@@ -551,16 +626,31 @@ def cleanup_screen_text(text: str, *, is_comment: bool = False) -> str:
     text = clean_text(text)
 
     if is_comment:
+        text = strip_leading_comment_metadata(text)
         text = re.sub(r"^\u00b7\s*", "", text)
+        text = re.sub(r"\b(?:https?://|www\.)\S+\b", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\b\S*(?:shopee|lazada|tiktokshop|linktr|bit\.ly)\S*\b", " ", text, flags=re.IGNORECASE)
         text = strip_trailing_comment_metric(text)
         text = normalize_screen_typos(text)
     return clean_text(text)
+
+
+def is_promotional_comment_text(text: str) -> bool:
+    normalized = normalize_search_text(text)
+    if not normalized:
+        return False
+    if re.search(r"\b(?:https?://|www\.)\S+|\b(?:s\.shopee|shopee|lazada|tiktokshop|linktr|bit\.ly)\b", normalized):
+        return True
+    if re.search(r"\b(?:ib|inbox|check ib|check inbox|zalo|sdt|so dien thoai|lien he|dat hang|order)\b", normalized):
+        return True
+    return False
 
 
 def is_low_value_comment(text: str) -> bool:
     normalized = normalize_search_text(text)
     if not normalized:
         return True
+    compact = re.sub(r"[^a-z0-9]+", "", normalized)
     ui_phrases = (
         "hang dau",
         "xem hoat dong",
@@ -569,15 +659,45 @@ def is_low_value_comment(text: str) -> bool:
         "view activity",
         "top",
     )
-    compact = normalized.strip(" .,:;")
-    if compact in ui_phrases:
+    compact_phrase = normalized.strip(" .,:;")
+    if compact_phrase in ui_phrases:
         return True
-    if re.fullmatch(r"(?:\d+(?:[.,]\d+)?[km]?\s*){1,4}", compact):
+    if re.search(r"\b(?:https?://|www\.)\S+|\b(?:s\.shopee|shopee|lazada|tiktokshop|linktr|bit\.ly)\b", normalized):
+        return True
+    if re.search(r"\b(?:ib|inbox|check ib|check inbox|zalo|sdt|so dien thoai|lien he|dat hang|order)\b", normalized):
+        return True
+    if re.search(r"\b(?:cho xin|xin)\s+(?:info|in4|link|gia)\b", normalized):
+        return True
+    if re.search(r"\b(?:tac gia|author|da ghim|ghim)\b", normalized) and len(normalized.split()) <= 12:
+        return True
+    if re.fullmatch(r"(?:\d+(?:[.,]\d+)?[km]?\s*){1,4}", compact_phrase):
         return True
     if len(normalized.split()) <= 6 and re.search(r"\b\d+(?:[.,]\d+)?k?\b", normalized):
         return True
     if any(phrase in normalized for phrase in ("tra loi ", "reply to ", "xem hoat dong")) and len(normalized.split()) <= 5:
         return True
+    if len(normalized.split()) <= 7:
+        if any(re.fullmatch(pattern, normalized) for pattern in LOW_VALUE_COMMENT_PATTERNS):
+            return True
+        compact_patterns = (
+            r"^(?:minh|mnh|toi|em|anh|chi)?quantam(?:a|ah|nha|nhe|voi)?$",
+            r"^(?:ban)?nhan(?:mk|mik|minh|mnh|toi|em)(?:nha|nhe|a|ah)?$",
+            r"^(?:ib|inbox|checkib|checkinbox)(?:minh|mnh|toi|em|ban)?(?:nha|nhe|a|ah)?$",
+            r"^(?:cho(?:minh|mnh|em|toi))?xin(?:info|in4|link|gia)(?:voi|a|ah|nha|nhe)?$",
+            r"^(?:gui|pass)(?:info|in4|link|gia)(?:minh|mnh|toi|em)?$",
+        )
+        if any(re.fullmatch(pattern, compact) for pattern in compact_patterns):
+            return True
+        compact_literals = {
+            "quantm",
+            "mnhquantm",
+            "bnnhnmknha",
+            "bnnhnmknhe",
+            "bnnhnminhnha",
+            "bnnhnmnhnha",
+        }
+        if compact in compact_literals:
+            return True
     navigation_patterns = (
         r"\bde nghi\b.*\bchu tus\b.*\bso\b.*\btheo doi\b",
         r"\bchu tus\b.*\bde so\b",
@@ -641,8 +761,9 @@ def dedupe_comments(comments: list[dict[str, str]]) -> list[dict[str, str]]:
     seen = set()
 
     for comment in comments:
-        text = cleanup_screen_text(comment.get("text", ""), is_comment=True)
-        if not text or is_low_value_comment(text):
+        raw_text = clean_text(comment.get("text", ""))
+        text = cleanup_screen_text(raw_text, is_comment=True)
+        if is_promotional_comment_text(raw_text) or not text or is_low_value_comment(text):
             continue
         normalized = re.sub(r"[^0-9A-Za-z\u00c0-\u1ef9]+", "", text.lower())
         # Drop nested duplicate comment text: keep the richer block with author
@@ -1150,6 +1271,50 @@ async def prepare_threads_page(page: Page) -> None:
     )
 
 
+async def reveal_hidden_post_text(page: Page) -> None:
+    try:
+        clicked = await page.evaluate(
+            """
+            () => {
+              const isVisible = (el) => {
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 24 || rect.height < 10) return false;
+                const style = window.getComputedStyle(el);
+                return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+              };
+              const matchesRevealText = (text) => /(?:see|show|view|reveal|tap|xem|hiện|mở|nhạy cảm|nội dung nhạy cảm|sensitive|spoiler)/i.test(text || '');
+              const clicked = new Set();
+
+              for (const root of document.querySelectorAll('article, [role="article"], [data-pressable-container="true"]')) {
+                for (const el of [root, ...root.querySelectorAll('*')]) {
+                  if (!isVisible(el)) continue;
+                  const style = window.getComputedStyle(el);
+                  const filterText = `${style.filter || ''} ${style.backdropFilter || ''}`.toLowerCase();
+                  const text = (el.innerText || el.getAttribute('aria-label') || '').trim();
+                  if (!filterText.includes('blur(') && !matchesRevealText(text)) continue;
+
+                  const target = el.closest('button, [role="button"], a, div, span') || el;
+                  if (!target || clicked.has(target)) continue;
+                  try {
+                    target.click();
+                    clicked.add(target);
+                  } catch (error) {
+                    // Ignore and continue to other candidates.
+                  }
+                }
+              }
+
+              return clicked.size;
+            }
+            """
+        )
+        if clicked:
+            log(f"Revealed {clicked} hidden/blurred text target(s) before screenshot.")
+            await page.wait_for_timeout(1200)
+    except Exception as exc:
+        log(f"Hidden text reveal skipped: {exc}")
+
+
 async def wait_for_element_media(page: Page, handle) -> None:
     try:
         await page.evaluate(
@@ -1320,11 +1485,22 @@ def choose_post_and_comments(
         return None, [], [], "general"
 
     vietnamese_blocks = [block for block in reasonable if is_vietnamese(block.get("text", ""))]
+    post_candidate_pool = vietnamese_blocks or reasonable
+    preferred_post_candidates = [
+        block
+        for block in post_candidate_pool
+        if not (
+            bool((block.get("meta", {}) or {}).get("has_author_badge"))
+            and len(str((block.get("meta", {}) or {}).get("body_text") or "").split()) < 12
+        )
+    ]
     post_candidates = sorted(
-        vietnamese_blocks or reasonable,
+        preferred_post_candidates or post_candidate_pool,
         key=lambda block: (
             0 if normalize_search_text(str((block.get("meta", {}) or {}).get("author_name") or "")) == post_author else 1,
+            0 if not bool((block.get("meta", {}) or {}).get("has_author_badge")) else 1,
             0 if len(re.findall(r"\d+(?:[.,]\d+)?K?|\d+", block.get("text", ""), re.IGNORECASE)) >= 2 else 1,
+            -int((block.get("meta", {}) or {}).get("engagement_score") or 0),
             rect_document_top(block.get("rect", {}) or {}),
             -block.get("rect", {}).get("height", 0),
         ),
@@ -1764,10 +1940,12 @@ async def screenshot_post_and_comments(
     accumulated_comments: list[dict] = []
     accumulated_keys: set[str] = set()
 
+    await reveal_hidden_post_text(page)
     await prepare_threads_page(page)
     await page.locator(POST_LOCATOR).first.wait_for(state="visible", timeout=10000)
 
     for attempt in range(1, MAX_COMMENT_CAPTURE_ATTEMPTS + 1):
+        await reveal_hidden_post_text(page)
         blocks = await get_pressable_blocks(page)
         post_block, continuation_blocks, comment_blocks, detected_mode = choose_post_and_comments(blocks, post_author, max_comments)
 
@@ -1822,6 +2000,7 @@ async def screenshot_post_and_comments(
         if attempt < MAX_COMMENT_CAPTURE_ATTEMPTS:
             await page.evaluate("window.scrollBy(0, window.innerHeight * 0.9)")
             await page.wait_for_timeout(COMMENT_CAPTURE_WAIT_MS)
+            await reveal_hidden_post_text(page)
             await prepare_threads_page(page)
 
     post_block = best_post_block
@@ -1953,6 +2132,7 @@ async def process_post(post_id: str, url: str, config: Config) -> dict:
             log(f"Opening post: {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=config.timeout_ms)
             await page.wait_for_timeout(5000)
+            await reveal_hidden_post_text(page)
 
             screenshots, isolated_content = await screenshot_post_and_comments(
                 page,

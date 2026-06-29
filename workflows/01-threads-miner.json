@@ -128,7 +128,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction parseJsonCandidate(text) {\n  const cleaned = cleanText(text);\n  if (!cleaned) return null;\n\n  const fencedMatch = cleaned.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  const jsonSource = fencedMatch ? fencedMatch[1] : cleaned;\n  const braceMatch = jsonSource.match(/\\{[\\s\\S]*\\}/);\n  const candidate = braceMatch ? braceMatch[0] : jsonSource;\n\n  try {\n    const parsed = JSON.parse(candidate);\n    return parsed && typeof parsed === 'object' ? parsed : null;\n  } catch (error) {\n    return null;\n  }\n}\n\nfunction extractTextDeep(value, bucket = []) {\n  if (typeof value === 'string') {\n    const cleaned = cleanText(value);\n    if (cleaned) bucket.push(cleaned);\n    return bucket;\n  }\n\n  if (!value || typeof value !== 'object') return bucket;\n  if (Array.isArray(value)) {\n    value.forEach(entry => extractTextDeep(entry, bucket));\n    return bucket;\n  }\n\n  Object.values(value).forEach(entry => {\n    if (typeof entry === 'string') {\n      const cleaned = cleanText(entry);\n      if (cleaned) bucket.push(cleaned);\n    } else if (entry && typeof entry === 'object') {\n      extractTextDeep(entry, bucket);\n    }\n  });\n  return bucket;\n}\n\nfunction extractClassifierDecision(data) {\n  if (!data || typeof data !== 'object') return null;\n\n  const direct = [data.output, data.text, data.content, data.message, data.response].filter(Boolean);\n  for (const candidate of direct) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  for (const candidate of extractTextDeep(data, [])) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  return null;\n}\n\nconst kept = [];\n\nfor (const item of $input.all()) {\n  const classifier = item.json._classifier || {};\n  const preview = cleanText(classifier.preview || item.json.text_preview || '');\n  const fitScore = Number(classifier.fitScore || item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(classifier.fitTags || item.json.content_fit_tags) ? (classifier.fitTags || item.json.content_fit_tags) : [];\n  const strongestMetric = Number(classifier.strongestMetric || item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(classifier.metricCount || item.json.engagement_metric_count || 0);\n  const classifierEnabled = classifier.enabled !== false;\n  const searchKeyword = cleanText(classifier.searchKeyword || item.json.search_keyword || '');\n  const requiresKeywordMatch = Boolean(searchKeyword);\n  const queryMatch = classifier.queryMatch === true || item.json.query_match === true || fitTags.includes('query-match');\n  const fallbackKeep = fitScore >= 5 && preview.length >= 140 && metricCount >= 2 && strongestMetric >= 1000 && (!requiresKeywordMatch || queryMatch) && (fitTags.includes('discussion') || fitTags.includes('story') || fitTags.includes('topic-hot') || fitTags.includes('priority-topic') || fitTags.includes('mass-appeal'));\n  const parsed = classifierEnabled ? extractClassifierDecision(item.json) : null;\n\n  let decision = fallbackKeep ? 'keep' : 'reject';\n  let angle = fitTags.includes('discussion') ? 'discussion' : (fitTags.includes('story') ? 'story_hot' : ((fitTags.includes('topic-hot') || fitTags.includes('priority-topic') || fitTags.includes('mass-appeal')) ? 'topic_hot' : 'reject'));\n  let confidence = fallbackKeep ? 0.6 : 0.35;\n  let reason = fallbackKeep\n    ? `heuristic keep fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} tags=${fitTags.join(',') || 'none'}`\n    : `heuristic reject fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} preview_too_weak`;\n\n  if (requiresKeywordMatch && !queryMatch) {\n    decision = 'reject';\n    angle = 'reject';\n    confidence = Math.max(confidence, 0.8);\n    reason = `reject off_keyword keyword=${searchKeyword || 'none'}`;\n  } else if (strongestMetric < 1000) {\n    decision = 'reject';\n    angle = 'reject';\n    confidence = Math.max(confidence, 0.7);\n    reason = `reject strongest_metric_under_1000 strongest=${strongestMetric} total=${classifier.engagementScore || item.json.engagement_score || 0}`;\n  } else if (!classifierEnabled) {\n    reason = `ai disabled; ${reason}`;\n  } else if (parsed) {\n    const parsedDecision = cleanText(parsed.decision || '').toLowerCase();\n    const parsedAngle = cleanText(parsed.angle || '').toLowerCase();\n    const parsedReason = cleanText(parsed.reason || '');\n    const parsedConfidence = Number(parsed.confidence || 0);\n    if ((parsedDecision === 'keep' || parsedDecision === 'reject') && ['discussion', 'story_hot', 'topic_hot', 'reject'].includes(parsedAngle || 'reject')) {\n      decision = parsedDecision;\n      angle = parsedAngle || (parsedDecision === 'keep' ? 'discussion' : 'reject');\n      confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : confidence;\n      reason = parsedReason || reason;\n    }\n  } else {\n    reason = `ai fallback; ${reason}`;\n  }\n\n  item.json._classifier_decision = decision;\n  item.json._classifier_angle = angle;\n  item.json._classifier_confidence = Math.max(0, Math.min(1, confidence || 0));\n  item.json._classifier_reason = reason;\n\n  if (decision === 'keep' && ['discussion', 'story_hot', 'topic_hot'].includes(angle)) {\n    kept.push(item);\n  }\n}\n\nreturn kept;"
+        "jsCode": "function cleanText(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim();\n}\n\nfunction parseJsonCandidate(text) {\n  const cleaned = cleanText(text);\n  if (!cleaned) return null;\n\n  const fencedMatch = cleaned.match(/```(?:json)?\\s*([\\s\\S]*?)```/i);\n  const jsonSource = fencedMatch ? fencedMatch[1] : cleaned;\n  const braceMatch = jsonSource.match(/\\{[\\s\\S]*\\}/);\n  const candidate = braceMatch ? braceMatch[0] : jsonSource;\n\n  try {\n    const parsed = JSON.parse(candidate);\n    return parsed && typeof parsed === 'object' ? parsed : null;\n  } catch (error) {\n    return null;\n  }\n}\n\nfunction extractTextDeep(value, bucket = []) {\n  if (typeof value === 'string') {\n    const cleaned = cleanText(value);\n    if (cleaned) bucket.push(cleaned);\n    return bucket;\n  }\n\n  if (!value || typeof value !== 'object') return bucket;\n  if (Array.isArray(value)) {\n    value.forEach(entry => extractTextDeep(entry, bucket));\n    return bucket;\n  }\n\n  Object.values(value).forEach(entry => {\n    if (typeof entry === 'string') {\n      const cleaned = cleanText(entry);\n      if (cleaned) bucket.push(cleaned);\n    } else if (entry && typeof entry === 'object') {\n      extractTextDeep(entry, bucket);\n    }\n  });\n  return bucket;\n}\n\nfunction extractClassifierDecision(data) {\n  if (!data || typeof data !== 'object') return null;\n\n  const direct = [data.output, data.text, data.content, data.message, data.response].filter(Boolean);\n  for (const candidate of direct) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  for (const candidate of extractTextDeep(data, [])) {\n    const parsed = parseJsonCandidate(candidate);\n    if (parsed) return parsed;\n  }\n\n  return null;\n}\n\nconst kept = [];\n\nfor (const item of $input.all()) {\n  const classifier = item.json._classifier || {};\n  const preview = cleanText(classifier.preview || item.json.text_preview || '');\n  const fitScore = Number(classifier.fitScore || item.json.content_fit_score || 0);\n  const fitTags = Array.isArray(classifier.fitTags || item.json.content_fit_tags) ? (classifier.fitTags || item.json.content_fit_tags) : [];\n  const strongestMetric = Number(classifier.strongestMetric || item.json.engagement_strongest_metric || 0);\n  const metricCount = Number(classifier.metricCount || item.json.engagement_metric_count || 0);\n  const classifierEnabled = classifier.enabled !== false;\n  const searchKeyword = cleanText(classifier.searchKeyword || item.json.search_keyword || '');\n  const requiresKeywordMatch = Boolean(searchKeyword);\n  const queryMatch = classifier.queryMatch === true || item.json.query_match === true || fitTags.includes('query-match');\n  const fallbackKeep = fitScore >= 5 && preview.length >= 140 && metricCount >= 2 && strongestMetric >= 1000 && (!requiresKeywordMatch || queryMatch) && (fitTags.includes('discussion') || fitTags.includes('story') || fitTags.includes('topic-hot') || fitTags.includes('priority-topic') || fitTags.includes('mass-appeal'));\n  const manualSearchKeep = requiresKeywordMatch && queryMatch && Boolean(item.json.id && item.json.url);\n  const parsed = classifierEnabled ? extractClassifierDecision(item.json) : null;\n\n  let decision = (fallbackKeep || manualSearchKeep) ? 'keep' : 'reject';\n  let angle = fitTags.includes('discussion') ? 'discussion' : (fitTags.includes('story') ? 'story_hot' : ((fitTags.includes('topic-hot') || fitTags.includes('priority-topic') || fitTags.includes('mass-appeal')) ? 'topic_hot' : 'discussion'));\n  let confidence = manualSearchKeep ? 0.72 : (fallbackKeep ? 0.6 : 0.35);\n  let reason = manualSearchKeep\n    ? `manual search keep keyword=${searchKeyword || 'none'} query_match=${queryMatch}`\n    : (fallbackKeep\n      ? `heuristic keep fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} tags=${fitTags.join(',') || 'none'}`\n      : `heuristic reject fit=${fitScore} metricCount=${metricCount} strongest=${strongestMetric} preview_too_weak`);\n\n  if (requiresKeywordMatch && !queryMatch) {\n    decision = 'reject';\n    angle = 'reject';\n    confidence = Math.max(confidence, 0.8);\n    reason = `reject off_keyword keyword=${searchKeyword || 'none'}`;\n  } else if (!manualSearchKeep && strongestMetric < 1000) {\n    decision = 'reject';\n    angle = 'reject';\n    confidence = Math.max(confidence, 0.7);\n    reason = `reject strongest_metric_under_1000 strongest=${strongestMetric} total=${classifier.engagementScore || item.json.engagement_score || 0}`;\n  } else if (!classifierEnabled) {\n    reason = `ai disabled; ${reason}`;\n  } else if (parsed) {\n    const parsedDecision = cleanText(parsed.decision || '').toLowerCase();\n    const parsedAngle = cleanText(parsed.angle || '').toLowerCase();\n    const parsedReason = cleanText(parsed.reason || '');\n    const parsedConfidence = Number(parsed.confidence || 0);\n    if ((parsedDecision === 'keep' || parsedDecision === 'reject') && ['discussion', 'story_hot', 'topic_hot', 'reject'].includes(parsedAngle || 'reject')) {\n      decision = parsedDecision;\n      angle = parsedAngle || (parsedDecision === 'keep' ? 'discussion' : 'reject');\n      confidence = Number.isFinite(parsedConfidence) ? parsedConfidence : confidence;\n      reason = parsedReason || reason;\n    }\n  } else {\n    reason = `ai fallback; ${reason}`;\n  }\n\n  item.json._classifier_decision = decision;\n  item.json._classifier_angle = angle;\n  item.json._classifier_confidence = Math.max(0, Math.min(1, confidence || 0));\n  item.json._classifier_reason = reason;\n\n  if (decision === 'keep' && ['discussion', 'story_hot', 'topic_hot'].includes(angle)) {\n    kept.push(item);\n  }\n}\n\nreturn kept;"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -476,7 +476,7 @@
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2.1,
       "position": [
-        7488,
+        7616,
         2400
       ],
       "id": "687a8f51-0bc6-412f-81c3-851e73d136e7",
@@ -513,7 +513,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7984,
+        7792,
         2400
       ],
       "id": "9328e819-dac5-4f3c-a68b-62c8b9d47b28",
@@ -522,7 +522,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ \"https://api.telegram.org/bot\" + $env.TELEGRAM_PHASE1_BOT_TOKEN + \"/sendMessage\" }}",
+        "url": "http://host.docker.internal:8000/telegram/send/phase1",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { chat_id: $json.chat_id || $env.TELEGRAM_CHAT_ID, text: $json.reply_text || \"Da nhan yeu cau.\", disable_web_page_preview: true } }}",
@@ -533,8 +533,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [
-        8288,
-        2608
+        7984,
+        2400
       ],
       "id": "1d23ccb7-f46d-40dd-ab6e-e34bc195d6ac",
       "name": "Reply Search Accepted"
@@ -542,7 +542,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $json.mode === 'search' ? 'http://host.docker.internal:8000/phase1/threads-search' : 'http://host.docker.internal:8000/phase1/noop' }}",
+        "url": "={{ ($('Parse Telegram Search Request').item.json.mode || 'search') === 'search' ? 'http://host.docker.internal:8000/phase1/threads-search' : 'http://host.docker.internal:8000/phase1/noop' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ ($('Parse Telegram Search Request').item.json.mode || 'search') === 'search' ? { keyword: $('Parse Telegram Search Request').item.json.keyword, max_posts: $('Parse Telegram Search Request').item.json.max_posts || Number($env.THREADS_SEARCH_MAX_POSTS || 10), chat_id: $('Parse Telegram Search Request').item.json.chat_id || $env.TELEGRAM_CHAT_ID, requested_by: $('Parse Telegram Search Request').item.json.requested_by || '' } : { suppress_reply: true, request: { keyword: 'help', chat_id: $('Parse Telegram Search Request').item.json.chat_id || $env.TELEGRAM_CHAT_ID, requested_by: $('Parse Telegram Search Request').item.json.requested_by || '' }, posts: [], post_count: 0 } }}",
@@ -562,10 +562,10 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $json.suppress_reply ? 'http://host.docker.internal:8000/phase1/noop' : ('https://api.telegram.org/bot' + $env.TELEGRAM_PHASE1_BOT_TOKEN + '/sendMessage') }}",
+        "url": "={{ $json.suppress_reply ? 'http://host.docker.internal:8000/phase1/noop' : 'http://host.docker.internal:8000/telegram/send/phase1' }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ $json.suppress_reply ? { ok: true } : { chat_id: ($json.request && $json.request.chat_id) || $env.TELEGRAM_CHAT_ID, text: 'Tìm xong: ' + (($json.request && $json.request.keyword) || 'keyword') + ' - ' + (($json.post_count || (($json.posts || []).length)) || 0) + ' bài trước bước lọc cuối. Các bài đạt chất lượng sẽ được ghi vào Sheet.', disable_web_page_preview: true } }}",
+        "jsonBody": "={{ $json.suppress_reply ? { ok: true } : { chat_id: ($json.request && $json.request.chat_id) || $env.TELEGRAM_CHAT_ID, text: '?? qu?t xong keyword \"' + ((($json.request && $json.request.keyword) || 'keyword')) + '\": runner t?m ???c ' + (($json.post_count || (($json.posts || []).length)) || 0) + ' b?i top match. N?u b?i ch?a c? s?n trong Sheet th? workflow s? append v? t? chuy?n sang phase ti?p theo.', disable_web_page_preview: true } }}",
         "options": {
           "timeout": 120000
         }
@@ -746,7 +746,13 @@
             "node": "Reply Search Accepted",
             "type": "main",
             "index": 0
-          },
+          }
+        ]
+      ]
+    },
+    "Reply Search Accepted": {
+      "main": [
+        [
           {
             "node": "Run Threads Search",
             "type": "main",
@@ -760,6 +766,11 @@
         [
           {
             "node": "Parse JSON Output",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read Current Sheet",
             "type": "main",
             "index": 0
           },

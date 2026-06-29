@@ -847,7 +847,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=http://n8n:5678/webhook/phase4-start",
+        "url": "={{ $env.N8N_PHASE4_START_URL || 'http://n8n:5678/webhook/phase4-start' }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { id: $json.ID, video_path: $json.Video_Path || '', caption: $json.Caption || '', status: $json.Status, note: $json.Note || '', draft_video_url: $json.Draft_Video_URL || '', tiktok_publish_id: $json.TikTok_Publish_ID || '' } }}",
@@ -892,6 +892,38 @@
       ],
       "id": "33cbcf97-c1e1-47bb-a6d0-df7daede6dbc",
       "name": "Read Threads Sheet For Merge",
+      "credentials": {
+        "googleApi": {
+          "id": "vmA1pHEPcokiBOaZ",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1mRIuWxQGfkS29TCr3f9vfsfPZZ1XgNtWqhtu-PcXsfg",
+          "mode": "list",
+          "cachedResultName": "GOOGLE_SHEET_ID",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Threads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3136,
+        1456
+      ],
+      "id": "7a8a34aa-1b95-4ad0-bf78-81c1135ea9ea",
+      "name": "Read Threads Sheet For Merge After Visual",
       "credentials": {
         "googleApi": {
           "id": "vmA1pHEPcokiBOaZ",
@@ -1099,7 +1131,7 @@
       "main": [
         [
           {
-            "node": "Read Threads Sheet For Merge",
+            "node": "Read Threads Sheet For Merge After Visual",
             "type": "main",
             "index": 0
           }
@@ -1125,6 +1157,17 @@
             "type": "main",
             "index": 0
           },
+          {
+            "node": "Pick Merge Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Threads Sheet For Merge After Visual": {
+      "main": [
+        [
           {
             "node": "Pick Merge Row",
             "type": "main",

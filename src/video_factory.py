@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -87,6 +88,11 @@ MIN_VIDEO_SECONDS = max(30.0, float(os.getenv("MIN_VIDEO_SECONDS", "60")))
 TARGET_VIDEO_SECONDS = max(MIN_VIDEO_SECONDS, float(os.getenv("TARGET_VIDEO_SECONDS", str(MIN_VIDEO_SECONDS))))
 TARGET_AUDIO_SECONDS = max(20.0, float(os.getenv("TARGET_AUDIO_SECONDS", str(TARGET_VIDEO_SECONDS))))
 TARGET_AUDIO_SEGMENTS = max(2, int(os.getenv("TARGET_AUDIO_SEGMENTS", "7")))
+DISCUSSION_TARGET_AUDIO_SECONDS = max(
+    20.0,
+    min(TARGET_AUDIO_SECONDS, float(os.getenv("DISCUSSION_TARGET_AUDIO_SECONDS", "45"))),
+)
+DISCUSSION_TARGET_AUDIO_SEGMENTS = max(2, int(os.getenv("DISCUSSION_TARGET_AUDIO_SEGMENTS", "6")))
 FINAL_FRAME_HOLD_SECONDS = max(0.8, float(os.getenv("FINAL_FRAME_HOLD_SECONDS", "1.6")))
 VIENEU_TTS_ENABLED = str(os.getenv("VIENEU_TTS_ENABLED", "false")).strip().lower() in {"1", "true", "yes"}
 VIENEU_MODE = os.getenv("VIENEU_MODE", "standard").strip() or "standard"
@@ -297,6 +303,17 @@ def normalize_tts_shorthand(text: str) -> str:
     text = str(text or "")
     replacements = [
         (r"\bwtf\b", "what the fuck"),
+        (r"\bmk\b", "mình"),
+        (r"\bmik\b", "mình"),
+        (r"\bcmt\b", "comment"),
+        (r"\bib\b", "inbox"),
+        (r"\bin4\b", "thông tin"),
+        (r"\bbn\b", "bạn"),
+        (r"\bbth\b", "bình thường"),
+        (r"\bdc\b", "được"),
+        (r"\btht\b", "thật"),
+        (r"\bns\b", "nói"),
+        (r"\blm\b", "làm"),
         (r"\bbọn\s+tớ\b", "bọn tao"),
         (r"\btụi\s+tớ\b", "tụi tao"),
         (r"\bbọn\s+t\b", "bọn tao"),
@@ -335,6 +352,15 @@ def normalize_tts_shorthand(text: str) -> str:
 def clean_tts_segment_text(text: str) -> str:
     text = str(text or "")
     text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"^(?:Đã ghim|Da ghim|Ghim)\b[\s:.,;·-]*", " ", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"^(?:Tác giả|Tac gia|Author)\b[\s:.,;·-]*", " ", text, flags=re.IGNORECASE).strip()
+    text = re.sub(
+        r"^(?:Pinned\s+)?@?[A-Za-z0-9_.-]{3,}(?:\s+[A-Za-z0-9_.&'/-]{2,}){0,4}\s*/\s*\d{2,4}\b[\s:.,;·-]*",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    text = re.sub(r"^(?:Tác giả|Tac gia|Author)\b[\s:.,;·-]*", " ", text, flags=re.IGNORECASE).strip()
     text = re.sub(
         r"^(?:Pinned\s+)?@?[A-Za-z0-9_.-]{3,}\s+\d+\s*[smhdw]\b\s*",
         " ",
@@ -350,11 +376,41 @@ def clean_tts_segment_text(text: str) -> str:
     text = re.sub(r"^@?[A-Za-z0-9.]*_[A-Za-z0-9_.-]*\b[\s:.,;-]*", " ", text, flags=re.IGNORECASE).strip()
     text = re.sub(r"^\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?[\s:.,;-]*", " ", text)
     text = re.sub(r"(?<!\d)\(\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)(?!\d)", " ", text)
+    text = re.sub(r"^(?:[./-]\s*)?\d{4}\b[\s:.,;-]*", " ", text).strip()
     text = re.sub(r"\bTranslate\b\s*\(?\s*[1-9]\d?\s*(?:/\s*[1-9]\d?)?\s*\)?", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\b(?:Reply|Like|Share|Repost|View activity|Top)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:https?://|www\.)\S+\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\S*(?:shopee|lazada|tiktokshop|linktr|bit\.ly)\S*\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"(?:\s+\d+(?:[.,]\d+)?[KMkm]?){1,4}\s*$", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def is_low_signal_comment_segment(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "").strip()).lower()
+    if not normalized:
+        return True
+    if has_promotional_comment_markers(normalized):
+        return True
+    if re.search(r"\b(?:cho xin|xin)\s+(?:info|in4|link|gia)\b", normalized):
+        return True
+    if re.search(r"\b(?:tác giả|tac gia|author|đã ghim|da ghim|ghim)\b", normalized):
+        return True
+    compact = re.sub(r"[^a-z0-9]+", "", normalized)
+    if compact in {"tacgia", "author", "daghim", "ghim"}:
+        return True
+    return False
+
+
+def has_promotional_comment_markers(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "").strip()).lower()
+    if not normalized:
+        return False
+    if re.search(r"\b(?:https?://|www\.)\S+|\b(?:s\.shopee|shopee|lazada|tiktokshop|linktr|bit\.ly)\b", normalized):
+        return True
+    if re.search(r"\b(?:ib|inbox|check ib|check inbox|zalo|sdt|so dien thoai|lien he|dat hang|order)\b", normalized):
+        return True
+    return False
 
 
 def strip_leading_author_label(text: str, *author_values: object) -> str:
@@ -381,6 +437,150 @@ def strip_leading_author_label(text: str, *author_values: object) -> str:
 
 
 def clean_script(text: str) -> str:
+    text = clean_tts_segment_text(text)
+    text = normalize_tts_shorthand(text)
+    text = re.sub(r"\s+", " ", text or "").strip()
+    return text[:4800]
+
+
+def replace_standalone_token(text: str, token: str, replacement: str) -> str:
+    escaped = re.escape(token)
+    pattern = re.compile(
+        rf"(^|[\s\"'“”‘’()\[\]{{}}.,!?;:+\-]){escaped}(?=$|[\s\"'“”‘’()\[\]{{}}.,!?;:+\-])",
+        flags=re.IGNORECASE,
+    )
+    return pattern.sub(lambda match: f"{match.group(1)}{replacement}", text)
+
+
+def normalize_list_reading_pauses(text: str) -> str:
+    cleaned = str(text or "").replace("\r", "")
+    if not cleaned:
+        return ""
+    cleaned = re.sub(r"\n\s*[.\-•*]\s*\n", "\n", cleaned)
+    lines = [line.strip(" \t-•*") for line in cleaned.split("\n")]
+    lines = [line for line in lines if line]
+    if len(lines) < 3:
+        return cleaned
+
+    header = lines[0].rstrip(" .")
+    tail = lines[1:]
+    list_like_count = sum(1 for line in tail if " - " in line or len(line.split()) <= 8)
+    if list_like_count < 2:
+        return cleaned
+
+    spoken_tail = [line.rstrip(".,;:!?") for line in tail]
+    return "\n".join([header] + [f"{line}." for line in spoken_tail])
+
+
+def normalize_tts_shorthand(text: str) -> str:
+    text = f" {str(text or '')} "
+    literal_replacements = [
+        ("t/g", "thời gian"),
+        ("wtf", "what the fuck"),
+        ("nyc", "người yêu cũ"),
+        ("nyn", "người yêu mới"),
+        ("mk", "mình"),
+        ("mik", "mình"),
+        ("cmt", "comment"),
+        ("ib", "inbox"),
+        ("in4", "thông tin"),
+        ("bn", "bạn"),
+        ("b", "bạn"),
+        ("bth", "bình thường"),
+        ("dc", "được"),
+        ("đc", "được"),
+        ("ny", "người yêu"),
+        ("ko", "không"),
+        ("k", "không"),
+        ("kh", "không"),
+        ("v", "vậy"),
+        ("r", "rồi"),
+        ("cx", "cũng"),
+        ("ah", "anh"),
+        ("mn", "mọi người"),
+        ("mng", "mọi người"),
+        ("vdu", "ví dụ"),
+        ("ntn", "như thế nào"),
+        ("đcm", "đờ cờ mờ"),
+        ("dcm", "đờ cờ mờ"),
+        ("hnay", "hôm nay"),
+        ("vcl", "vờ cờ lờ"),
+        ("vl", "vờ lờ"),
+        ("nma", "nhưng mà"),
+        ("lm", "làm"),
+        ("đ", "đéo"),
+        ("cr", "crush"),
+        ("crsh", "crush"),
+        ("vk", "vợ"),
+        ("ck", "chồng"),
+        ("gđ", "gia đình"),
+        ("gđinh", "gia đình"),
+        ("đv", "đối với"),
+        ("kv", "khu vực"),
+        ("ae", "anh em"),
+        ("đg", "đang"),
+        ("tg", "thời gian"),
+        ("stt", "status"),
+        ("tl", "trả lời"),
+        ("rep", "reply"),
+        ("tks", "thanks"),
+        ("ty", "thank you"),
+        ("clgt", "cái lề gì thốn"),
+        ("cc", "củ cải"),
+        ("gato", "ga tô"),
+        ("klq", "không liên quan"),
+        ("bsvv", "buổi sáng vui vẻ"),
+        ("hpbd", "happy birthday"),
+        ("g9", "gút nai"),
+        ("fb", "facebook"),
+        ("yt", "youtube"),
+        ("tt", "tương tác"),
+        ("pvd", "phóng viên đại hội"),
+        ("atsm", "ảo tưởng sức mạnh"),
+        ("2k", "hai nghìn"),
+        ("3g", "ba gi"),
+        ("4g", "bốn gi"),
+        ("5g", "năm gi"),
+        ("j", "gì"),
+        ("e", "em"),
+        ("đh", "đại học"),
+        ("thg", "thằng"),
+        ("tk", "thằng"),
+        ("nhe", "nhé"),
+        ("kđm", "không được mà"),
+        ("chm", "chúc mừng"),
+        ("sn", "sinh nhật"),
+        ("ksao", "không sao"),
+        ("thui", "thôi"),
+        ("hqua", "hôm qua"),
+        ("hmai", "ngày mai"),
+        ("ngmai", "ngày mai"),
+        ("t7", "thứ bảy"),
+        ("cn", "chủ nhật"),
+        ("t", "tao"),
+        ("m", "mày"),
+    ]
+    regex_replacements = [
+        (r"\bbá»n\s+tá»›\b", "bọn tao"),
+        (r"\btá»¥i\s+tá»›\b", "tụi tao"),
+        (r"\bbá»n\s+t\b", "bọn tao"),
+        (r"\btá»¥i\s+t\b", "tụi tao"),
+        (r"\bbon\s+t\b", "bọn tao"),
+        (r"\btá»›\b", "tao"),
+        (r"\bcmay\b", "chúng mày"),
+        (r"\bcm\b", "chúng mày"),
+        (r"\btui\b", "tôi"),
+        (r"(?<=\s)k sao(?=\s|$)", "không sao"),
+    ]
+    for token, replacement in literal_replacements:
+        text = replace_standalone_token(text, token, replacement)
+    for pattern, replacement in regex_replacements:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def clean_script(text: str) -> str:
+    text = normalize_list_reading_pauses(text)
     text = clean_tts_segment_text(text)
     text = normalize_tts_shorthand(text)
     text = re.sub(r"\s+", " ", text or "").strip()
@@ -420,7 +620,7 @@ def extract_json_script_candidate(text: str) -> str:
 
 
 def build_segment_script(extracted_content: str | None) -> str:
-    segments = parse_extracted_segments(extracted_content)
+    segments = expand_long_comment_segments(parse_extracted_segments(extracted_content))
     if not segments:
         return ""
     lines = []
@@ -496,8 +696,13 @@ def parse_extracted_segments(extracted_content: str | None) -> list[dict]:
             item.get("author_name", ""),
             item.get("author_key", ""),
         )
+        segment_type = str(item.get("type") or "segment")
         text = clean_script(raw_text)
         if not text:
+            continue
+        if segment_type.lower() == "comment" and (
+            has_promotional_comment_markers(raw_text) or is_low_signal_comment_segment(text)
+        ):
             continue
         try:
             image_index = int(item.get("image_index", index))
@@ -505,7 +710,7 @@ def parse_extracted_segments(extracted_content: str | None) -> list[dict]:
             image_index = index
         parsed_segments.append(
             {
-                "type": str(item.get("type") or "segment"),
+                "type": segment_type,
                 "text": text,
                 "image_index": image_index,
                 "author_name": str(item.get("author_name") or ""),
@@ -521,6 +726,17 @@ def parse_extracted_segments(extracted_content: str | None) -> list[dict]:
 def parse_content_mode(extracted_content: str | None) -> str:
     extracted = parse_extracted_content(extracted_content)
     return str(extracted.get("content_mode") or extracted.get("capture_mode") or "general").strip().lower() or "general"
+
+
+def audio_targets_for_mode(content_mode: str) -> tuple[float, int | None, int]:
+    mode = str(content_mode or "").strip().lower()
+    if mode == "discussion":
+        return (
+            DISCUSSION_TARGET_AUDIO_SECONDS,
+            DISCUSSION_TARGET_AUDIO_SEGMENTS,
+            DISCUSSION_TARGET_AUDIO_SEGMENTS,
+        )
+    return TARGET_AUDIO_SECONDS, None, TARGET_AUDIO_SEGMENTS
 
 
 def build_caption(script: str = "", extracted_content: str = "") -> str:
@@ -778,6 +994,110 @@ def split_script_for_extracted_segments(script: str, extracted_segments: list[di
     return chunks[:target_count]
 
 
+def split_text_into_audio_chunks(text: str, max_chars: int, max_parts: int) -> list[str]:
+    cleaned = clean_script(text)
+    if not cleaned:
+        return []
+
+    max_parts = max(1, int(max_parts or 1))
+    if len(cleaned) <= max_chars or max_parts == 1:
+        return [trim_audio_segment_text(cleaned, max_chars)]
+
+    desired_parts = min(max_parts, max(1, math.ceil(len(cleaned) / max_chars)))
+    target_chars = max(80, math.ceil(len(cleaned) / desired_parts))
+    rough_units = re.split(r"(?<=[.!?…])\s+|(?<=[,;:])\s+", cleaned)
+    units: list[str] = []
+
+    for unit in rough_units:
+        unit = clean_script(unit)
+        if not unit:
+            continue
+        if len(unit) <= max_chars:
+            units.append(unit)
+            continue
+
+        words = unit.split()
+        current_words: list[str] = []
+        for word in words:
+            candidate = " ".join([*current_words, word]).strip()
+            if current_words and len(candidate) > max_chars:
+                units.append(" ".join(current_words).strip())
+                current_words = [word]
+            else:
+                current_words.append(word)
+        if current_words:
+            units.append(" ".join(current_words).strip())
+
+    chunks: list[str] = []
+    current_units: list[str] = []
+    current_len = 0
+
+    for index, unit in enumerate(units):
+        remaining_units = len(units) - index
+        remaining_slots = desired_parts - len(chunks)
+        candidate = " ".join([*current_units, unit]).strip()
+        should_close = (
+            current_units
+            and (
+                len(candidate) > max_chars
+                or (
+                    current_len >= target_chars
+                    and remaining_slots > 1
+                    and remaining_units >= remaining_slots
+                )
+            )
+        )
+        if should_close:
+            chunks.append(trim_audio_segment_text(" ".join(current_units), max_chars))
+            current_units = [unit]
+            current_len = len(unit)
+        else:
+            current_units.append(unit)
+            current_len = len(candidate)
+
+    if current_units:
+        chunks.append(trim_audio_segment_text(" ".join(current_units), max_chars))
+
+    return [chunk for chunk in chunks if chunk][:desired_parts]
+
+
+def expand_long_comment_segments(segments: list[dict]) -> list[dict]:
+    expanded: list[dict] = []
+    for item in segments:
+        segment = dict(item)
+        segment_type = str(segment.get("type") or "").strip().lower()
+        if segment_type != "comment":
+            expanded.append(segment)
+            continue
+
+        text = clean_script(str(segment.get("text") or ""))
+        if not text or len(text) <= AUDIO_MAX_COMMENT_CHARS:
+            segment["text"] = text
+            expanded.append(segment)
+            continue
+
+        max_parts = min(4, max(1, math.ceil(len(text) / AUDIO_MAX_COMMENT_CHARS)))
+        chunks = split_text_into_audio_chunks(text, AUDIO_MAX_COMMENT_CHARS, max_parts)
+        if len(chunks) <= 1:
+            segment["text"] = text
+            expanded.append(segment)
+            continue
+
+        try:
+            base_image_index = int(segment.get("image_index", 0))
+        except (TypeError, ValueError):
+            base_image_index = 0
+
+        for chunk in chunks:
+            chunk_segment = dict(segment)
+            chunk_segment["text"] = chunk
+            # Multiple audio chunks can still belong to the same captured comment image.
+            chunk_segment["image_index"] = base_image_index
+            expanded.append(chunk_segment)
+
+    return expanded
+
+
 def trim_audio_segment_text(text: str, max_chars: int) -> str:
     text = clean_script(text)
     if len(text) <= max_chars:
@@ -845,7 +1165,11 @@ def evenly_spaced_segment_indexes(total_segments: int, wanted_segments: int) -> 
     return indexes
 
 
-def cap_audio_segments_to_target_duration(segments: list[dict], target_seconds: float) -> list[dict]:
+def cap_audio_segments_to_target_duration(
+    segments: list[dict],
+    target_seconds: float,
+    minimum_segments: int,
+) -> list[dict]:
     if len(segments) <= 2 or target_seconds <= 0:
         return segments
 
@@ -854,7 +1178,7 @@ def cap_audio_segments_to_target_duration(segments: list[dict], target_seconds: 
     if total_estimated <= target_seconds:
         return segments
 
-    minimum_segments = min(len(segments), TARGET_AUDIO_SEGMENTS)
+    minimum_segments = min(len(segments), max(1, int(minimum_segments or 1)))
     selected: list[dict] = []
     accumulated = 0.0
     for index, segment in enumerate(segments):
@@ -898,11 +1222,13 @@ def select_audio_segments(script: str, extracted_content: str = "") -> list[dict
     script_sections = parse_script_sections(script)
     extracted_segments = parse_extracted_segments(extracted_content)
     content_mode = parse_content_mode(extracted_content)
+    target_seconds, hard_segment_cap, minimum_segments = audio_targets_for_mode(content_mode)
     segment_source = str(os.getenv("AUDIO_SEGMENT_SOURCE", "extracted")).strip().lower()
 
     if extracted_segments and (segment_source == "extracted" or content_mode == "story"):
-        segments = apply_audio_segment_limits(remove_embedded_later_segments(extracted_segments), max_segments=0)
-        return cap_audio_segments_to_target_duration(segments, TARGET_AUDIO_SECONDS)
+        segments = expand_long_comment_segments(remove_embedded_later_segments(extracted_segments))
+        segments = apply_audio_segment_limits(segments, max_segments=hard_segment_cap or 0)
+        return cap_audio_segments_to_target_duration(segments, target_seconds, minimum_segments)
 
     if not script_sections:
         return []
@@ -924,11 +1250,15 @@ def select_audio_segments(script: str, extracted_content: str = "") -> list[dict
                     "author_key": matched_segment.get("author_key", ""),
                 }
             )
-        segments = apply_audio_segment_limits(remove_embedded_later_segments(paired_segments), max_segments=0)
-        return cap_audio_segments_to_target_duration(segments, TARGET_AUDIO_SECONDS)
+        segments = expand_long_comment_segments(remove_embedded_later_segments(paired_segments))
+        segments = apply_audio_segment_limits(segments, max_segments=hard_segment_cap or 0)
+        return cap_audio_segments_to_target_duration(segments, target_seconds, minimum_segments)
 
-    segments = apply_audio_segment_limits([{"type": "segment", "text": text} for text in script_sections])
-    return cap_audio_segments_to_target_duration(segments, TARGET_AUDIO_SECONDS)
+    segments = apply_audio_segment_limits(
+        [{"type": "segment", "text": text} for text in script_sections],
+        max_segments=hard_segment_cap or None,
+    )
+    return cap_audio_segments_to_target_duration(segments, target_seconds, minimum_segments)
 
 
 def overlap_key(text: str) -> str:
@@ -1657,22 +1987,41 @@ def build_overlay_plan_from_timing(paths: list[Path], timing_data: list[dict], d
 
     sequence = paths[:MAX_OVERLAY_IMAGES]
     timing_data = align_timing_to_available_images(timing_data, len(sequence))
+    used_source_indexes: list[int] = []
+    for index, item in enumerate(timing_data):
+        try:
+            used_source_indexes.append(int(item.get("image_index", index)))
+        except (TypeError, ValueError):
+            used_source_indexes.append(index)
+    unique_source_indexes = {index for index in used_source_indexes if 0 <= index < len(sequence)}
+    prefer_sequential_images = (
+        len(sequence) > len(unique_source_indexes)
+        and len(timing_data) <= len(sequence)
+        and len(unique_source_indexes) < len(timing_data)
+    )
     max_timing_end = 0.0
     for item in timing_data:
         try:
             max_timing_end = max(max_timing_end, float(item.get("end", 0.0) or 0.0))
         except (TypeError, ValueError):
             continue
+    # Preserve original audio timing whenever the visual is only slightly longer
+    # because of a final hold. Only shrink timings when they exceed the target.
     timing_scale = (duration / max_timing_end) if max_timing_end > duration > 0 else 1.0
     plan = []
     used_image_indexes: set[int] = set()
 
     for timing_index, item in enumerate(timing_data):
-        try:
-            image_index = int(item.get("image_index", 0))
-        except (TypeError, ValueError):
+        if prefer_sequential_images:
             image_index = timing_index
+        else:
+            try:
+                image_index = int(item.get("image_index", 0))
+            except (TypeError, ValueError):
+                image_index = timing_index
         if timing_index < len(sequence) and (image_index < 0 or image_index >= len(sequence)):
+            image_index = timing_index
+        if prefer_sequential_images and timing_index < len(sequence):
             image_index = timing_index
         if image_index < 0 or image_index >= len(sequence):
             continue
@@ -1992,10 +2341,11 @@ def build_visual(
             timing_data = []
 
     if audio_path and audio_path.exists():
-        # Match visual length to the generated narration instead of hard-capping
-        # at short-form defaults, otherwise the final merge trims the audio.
+        # Match visual length to the generated narration plus a short final hold.
+        # Do not force a minimum long duration here, otherwise timing stretches
+        # and a single image can linger far past the spoken segment.
         audio_duration = probe_duration(audio_path)
-        duration = max(MIN_VIDEO_SECONDS, audio_duration + FINAL_FRAME_HOLD_SECONDS)
+        duration = max(3.0, audio_duration + FINAL_FRAME_HOLD_SECONDS)
     else:
         duration = estimate_duration(clean_script(script), len(images)) + 2.0
         duration = min(120.0, max(MIN_VIDEO_SECONDS, duration))
@@ -2029,7 +2379,7 @@ def merge_final(post_id: str, audio_path: Path, visual_path: Path, videos_dir: P
     output_path = output_dir / "final.mp4"
     audio_duration = probe_duration(audio_path)
     visual_duration = probe_duration(visual_path)
-    duration = max(MIN_VIDEO_SECONDS, visual_duration, audio_duration + FINAL_FRAME_HOLD_SECONDS)
+    duration = max(3.0, visual_duration, audio_duration + FINAL_FRAME_HOLD_SECONDS)
     music_path = choose_background_music(post_id)
 
     command = [

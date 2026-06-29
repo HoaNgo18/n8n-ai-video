@@ -151,6 +151,11 @@ VIET_STOPWORDS = {
     "mot", "nguoi", "nghi", "nhieu", "nhung", "qua", "roi", "sao",
     "theo", "toi", "trong", "voi",
 }
+SEARCH_MATCH_STOPWORDS = {
+    "la", "va", "voi", "cua", "cho", "trong", "tren", "duoi", "tai",
+    "mot", "nhung", "nhieu", "cac", "nhung", "nay", "kia", "do", "roi",
+    "thi", "ma", "co", "khong", "bi", "duoc", "ve", "ra", "vao",
+}
 
 
 @dataclass(frozen=True)
@@ -253,7 +258,20 @@ def contains_normalized_keyword(normalized_text: str, keyword: str) -> bool:
     if not keyword:
         return False
     if " " in keyword:
-        return keyword in normalized_text
+        if keyword in normalized_text:
+            return True
+        terms = [
+            token for token in re.findall(r"[a-z0-9]+", keyword)
+            if len(token) >= 2 and token not in SEARCH_MATCH_STOPWORDS
+        ]
+        if not terms:
+            return False
+        matched = sum(
+            1 for token in terms
+            if re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", normalized_text)
+        )
+        required = len(terms) if len(terms) <= 2 else max(2, (len(terms) * 2 + 2) // 3)
+        return matched >= required
     return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", normalized_text) is not None
 
 
